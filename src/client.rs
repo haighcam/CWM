@@ -6,89 +6,78 @@ use x11rb::{
     COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE
 };
 use std::{
-    collections::HashMap,
     cell::{RefCell, Cell, Ref, RefMut},
-    rc::Rc
+    rc::Rc,
 };
 use log::info;
-use crate::utils::{StackElem, Rect, stack::Node};
-use crate::config::Theme;
-use crate::window_manager::AtomCollection;
-use super::{WindowManager, Layout, Layers, Tag, Screen, layout::LayoutInfo, WindowLocation};
+use crate::{
+    layers::Layers,
+    layout::{Layout, LayoutInfo},
+    monitor::Monitor,
+    tag::Tag,
+    utils::{StackElem, Rect, stack::Node},
+    AtomCollection, WindowLocation, WindowManager, CWMRes
+};
 
-
-pub struct Client {
-    win: Window,
-    frame: Window,
-    pub flags: ClientFlags,
-    stack_pos: StackElem<Window>,
-    layer_pos: StackElem<Window>,
-    layout: RefCell<Rc<RefCell<Layout>>>,
-    layer: Cell<usize>
+pub(crate) struct Client {
+    pub(crate) win: Window,
+    pub(crate) frame: Window,
+    pub(crate) flags: ClientFlags,
+    pub(crate) stack_pos: StackElem<Window>,
+    pub(crate) layer_pos: StackElem<Window>,
+    pub(crate) layout: RefCell<Rc<RefCell<Layout>>>,
+    pub(crate) layer: Cell<usize>,
+    pub(crate) name: Option<String>
 }
 
 #[derive(Default, Debug)]
-pub struct ClientFlags {
-    pub fullscreen: bool,
-    pub floating: bool,
-    pub sticky: bool,
-    pub aot: bool,
-    pub hidden: bool
+pub(crate) struct ClientFlags {
+    pub(crate) fullscreen: bool,
+    pub(crate) floating: bool,
+    pub(crate) sticky: bool,
+    pub(crate) aot: bool,
+    pub(crate) hidden: bool
 }
 
 impl Client {
-    pub fn layout(&self) -> Ref<Rc<RefCell<Layout>>> {
+    pub(crate) fn layout(&self) -> Ref<Rc<RefCell<Layout>>> {
         self.layout.borrow()
     }
 
-    pub fn layout_mut(&self) -> RefMut<Rc<RefCell<Layout>>> {
+    pub(crate) fn layout_mut(&self) -> RefMut<Rc<RefCell<Layout>>> {
         self.layout.borrow_mut()
     }
 
-    pub fn win(&self) -> Window {
-        self.win
-    }
-
-    pub fn frame(&self) -> Window {
-        self.frame
-    }
-
-    pub fn stack_pos(&self) -> StackElem<Window> {
-        self.stack_pos
-    }
-
-    pub fn layer_pos(&self) -> StackElem<Window> {
-        self.layer_pos
-    }
-
-    pub fn layer(&self) -> usize {
+    pub(crate) fn layer(&self) -> usize {
         self.layer.get()
     }
 
-    pub fn set_layer(&self, layer: usize) {
+    pub(crate) fn set_layer(&self, layer: usize) {
         self.layer.set(layer)
     }
 
     // maps and sets WM_STATE (NORMAL: 1, ICONIC: 3, WITHDRAWN: 0)
-    pub fn show(&self, wm: &WindowManager<impl Connection>) {
+    pub(crate) fn show(&self, wm: &WindowManager) -> CWMRes<()> {
         let mut bytes: Vec<u8> = Vec::with_capacity(8);
         1u32.serialize_into(&mut bytes);
         NONE.serialize_into(&mut bytes);
-        change_property(&wm.dpy, PropMode::REPLACE, self.win, wm.atoms.WM_STATE, wm.atoms.WM_STATE, 32, 2, &bytes);
-        map_window(&wm.dpy, self.frame);
-        map_window(&wm.dpy, self.win);
+        change_property(&wm.conn.dpy, PropMode::REPLACE, self.win, wm.atoms.WM_STATE, wm.atoms.WM_STATE, 32, 2, &bytes)?;
+        map_window(&wm.conn.dpy, self.frame)?;
+        map_window(&wm.conn.dpy, self.win)?;
+        Ok(())
     }
 
-    pub fn hide(&self, wm: &WindowManager<impl Connection>) {
+    pub(crate) fn hide(&self, wm: &WindowManager) -> CWMRes<()> {
         let mut bytes: Vec<u8> = Vec::with_capacity(8);
-        unmap_window(&wm.dpy, self.win);
-        unmap_window(&wm.dpy, self.frame);
+        unmap_window(&wm.conn.dpy, self.win)?;
+        unmap_window(&wm.conn.dpy, self.frame)?;
         3u32.serialize_into(&mut bytes);
         NONE.serialize_into(&mut bytes);
-        change_property(&wm.dpy, PropMode::REPLACE, self.win, wm.atoms.WM_STATE, wm.atoms.WM_STATE, 32, 2, &bytes);
+        change_property(&wm.conn.dpy, PropMode::REPLACE, self.win, wm.atoms.WM_STATE, wm.atoms.WM_STATE, 32, 2, &bytes)?;
+        Ok(()) 
     }
 
-    fn split(&self, wm: &WindowManager<impl Connection>, split: f32, mode: SplitMode, absent: bool) -> Rc<RefCell<Layout>> {
+    fn split(&self, wm: &WindowManager, split: f32, mode: SplitMode, absent: bool) -> CWMRes<Rc<RefCell<Layout>>> {
         let _layout = self.layout().clone();
         let (child2, layout_absent) = {
             let mut layout = _layout.borrow_mut();
@@ -106,21 +95,20 @@ impl Client {
             (child2, layout.absent)
         };
         if layout_absent && !absent {
-            Layout::propagate_absent(wm, _layout.clone());
+            Layout::propagate_absent(wm, _layout)?;
         } else if !(layout_absent && absent) {
             let layout = _layout.borrow();
-            match &layout.info {
-                LayoutInfo::Node(node) => node.resize_tiled(&layout.rect, &mut vec![]),
-                _ => ()
+            if let LayoutInfo::Node(node) = &layout.info {
+                node.resize_tiled(&layout.rect, &mut vec![]);
             }
         }
         if !self.flags.fullscreen && !self.flags.floating {
-            self.apply_pos_size(wm, &self.layout().borrow().rect);
+            self.apply_pos_size(wm, &self.layout().borrow().rect)?;
         }
-        child2
+        Ok(child2)
     }
 
-    pub fn remove(&self, wm: &WindowManager<impl Connection>) {
+    pub(crate) fn remove(&self, wm: &WindowManager) -> CWMRes<()> {
         let parent = {
             let layout = self.layout.borrow();
             let mut layout = layout.borrow_mut();
@@ -139,17 +127,17 @@ impl Client {
                     },
                     _ => parent.info = LayoutInfo::Empty
                 };
-                match &parent.info {
-                    LayoutInfo::Leaf(leaf) => *leaf.client().borrow().layout.borrow_mut() = _parent.clone(),
-                    _ => ()
+                if let LayoutInfo::Leaf(leaf) = &parent.info {
+                    *leaf.client.borrow().layout.borrow_mut() = _parent.clone()
                 }
             }
-            Layout::resize_tiled(_parent.clone(), wm, None);
-            Layout::propagate_absent(wm, _parent);
+            Layout::resize_tiled(_parent.clone(), wm, None)?;
+            Layout::propagate_absent(wm, _parent)?;
         }
+        Ok(())
     }
 
-    pub fn get_rect(&self) -> Option<Rect> {
+    pub(crate) fn get_rect(&self) -> Option<Rect> {
         if self.flags.fullscreen {
             None
         } else {
@@ -164,14 +152,15 @@ impl Client {
     }
 
     #[inline]
-    pub fn apply_pos_size(&self, wm: &WindowManager<impl Connection>, size: &Rect) {
+    pub(crate) fn apply_pos_size(&self, wm: &WindowManager, size: &Rect) -> CWMRes<()> {
         let aux = size.aux();
-        configure_window(&wm.dpy, self.frame, &aux);
-        configure_window(&wm.dpy, self.win, &aux.x(None).y(None));
+        configure_window(&wm.conn.dpy, self.frame, &aux)?;
+        configure_window(&wm.conn.dpy, self.win, &aux.x(None).y(None))?;
+        Ok(())
     }
 
     // don't call with the client borrowed_mut since it could (but shouldn't) probably call client.borrow()
-    pub fn set_absent(&self, wm: &WindowManager<impl Connection>) {
+    pub(crate) fn set_absent(&self, wm: &WindowManager) -> CWMRes<()> {
         // delas with all of the stuff that happens when absent is set to true;
         if let Some(parent) = {
             let layout = self.layout();
@@ -183,12 +172,13 @@ impl Client {
                 None
             }
         } {
-            Layout::propagate_absent(wm, parent);
+            Layout::propagate_absent(wm, parent)?;
         }
+        Ok(())
     }
 
     // don't call with the client borrowed_mut since it will probably call client.borrow()
-    pub fn set_present(&self, wm: &WindowManager<impl Connection>) {
+    pub(crate) fn set_present(&self, wm: &WindowManager) -> CWMRes<()> {
         // delas with all of the stuff that happens when absent is set to true;
         if let Some(parent) = {
             let layout = self.layout();
@@ -200,11 +190,13 @@ impl Client {
                 None
             }
         } {
-            Layout::propagate_absent(wm, parent);
+            Layout::propagate_absent(wm, parent)?;
         }
+        Ok(())
     }
 }
 
+#[allow(dead_code)]
 enum SplitMode {
     Horizontal,
     Vertical,
@@ -212,7 +204,7 @@ enum SplitMode {
 }
 
 impl ClientFlags {
-    pub fn get_layer(&self) -> usize {
+    pub(crate) fn get_layer(&self) -> usize {
         match self {
             Self { fullscreen: true, aot: false, .. } => Layers::FULLSCREEN,
             Self { floating: true, aot: false, .. } => Layers::FLOATING,
@@ -226,24 +218,24 @@ impl ClientFlags {
 
 
 #[derive(Debug)]
-pub struct ClientArgs {
-    pub focus: bool,
-    pub fullscreen: bool,
-    pub floating: bool, 
-    pub centered: bool,
-    pub managed: bool,
-    pub urgent: bool,
-    pub sticky: bool,
-    pub hidden: bool,
-    min_size: (u16, u16),
-    max_size: (u16, u16),
-    size: (u16, u16),
-    pub class: String,
-    pub name: String
+pub(crate) struct ClientArgs {
+    pub(crate) focus: bool,
+    pub(crate) fullscreen: bool,
+    pub(crate) floating: bool, 
+    pub(crate) centered: bool,
+    pub(crate) managed: bool,
+    pub(crate) urgent: bool,
+    pub(crate) sticky: bool,
+    pub(crate) hidden: bool,
+    pub(crate) min_size: (u16, u16),
+    pub(crate) max_size: (u16, u16),
+    pub(crate) size: (u16, u16),
+    pub(crate) class: Option<String>,
+    pub(crate) name: Option<String>
 }
 
 impl ClientArgs {
-    pub fn new(wm: &WindowManager<impl Connection>) -> Self {
+    pub(crate) fn new(wm: &WindowManager) -> Self {
         Self {
             focus: true,
             fullscreen: false,
@@ -256,34 +248,34 @@ impl ClientArgs {
             min_size: (wm.theme.window_min_width, wm.theme.window_min_height),
             size: (wm.theme.window_width, wm.theme.window_height),
             max_size: (std::u16::MAX, std::u16::MAX),
-            class: "".into(),
-            name: "".into()
+            class: None,
+            name: None
         }
     }
 
-    pub fn build(self, wm: &WindowManager<impl Connection>, win: Window, tag: &mut Tag, screen: &Screen) -> Window {
+    pub(crate) fn build(self, wm: &WindowManager, win: Window, tag: &mut Tag, _monitor: &Monitor) -> CWMRes<Window> {
         let Self {
             focus,
             fullscreen,
             floating,
-            centered,
-            managed,
-            urgent,
+            centered: _,
+            managed: _,
+            urgent: _,
             sticky,
             hidden,
             min_size,
             size,
             max_size,
-            class,
+            class: _,
             name
         } = self;
-        let frame = wm.dpy.generate_id().unwrap();
-        let layout = tag.focused_client().and_then(|x| tag.client(x)).map(|x| x.borrow().split(wm, 0.5, SplitMode::Max, floating || fullscreen || hidden)).unwrap_or(tag.layout.clone());
+        let frame = wm.conn.dpy.generate_id().unwrap();
+        let layout = tag.focused_client().and_then(|x| tag.client(x)).and_then(|x| x.borrow().split(wm, 0.5, SplitMode::Max, floating || fullscreen || hidden).ok()).unwrap_or_else(|| tag.layout.clone());
         let flags = ClientFlags {
             aot: false,
-            floating: floating,
-            fullscreen: fullscreen,
-            hidden: hidden,
+            floating,
+            fullscreen,
+            hidden,
             sticky
         };
         let layer_pos: StackElem<Window> = Box::leak(Box::new(Node::new(frame))).into();
@@ -296,7 +288,8 @@ impl ClientArgs {
             stack_pos,
             layer_pos,
             layout: RefCell::new(layout.clone()),
-            layer: Cell::new(0)
+            layer: Cell::new(0),
+            name
         })); // construct the client based on flags (Set the floating size based on the desired size? / centered / default)
         let centered_rect = Rect::new(
             tag.available.x + (tag.available.width as i16 - size.0 as i16) / 2, 
@@ -310,26 +303,26 @@ impl ClientArgs {
         
         {
             let client = client.borrow();
-            let size = client.get_rect().unwrap_or(tag.screen_size.clone());
+            let size = client.get_rect().unwrap_or_else(|| tag.monitor_size.clone());
             let border_width = if client.flags.fullscreen {0} else {wm.theme.border_width};
             let aux = CreateWindowAux::new().event_mask(EventMask::ENTER_WINDOW | EventMask::FOCUS_CHANGE | EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY);
-            create_window(&wm.dpy, COPY_DEPTH_FROM_PARENT, frame, screen.root(), size.x, size.y, size.width, size.height, border_width, WindowClass::COPY_FROM_PARENT, COPY_FROM_PARENT, &aux);
-            reparent_window(&wm.dpy, win, frame, 0, 0);
-            configure_window(&wm.dpy, client.win, &size.aux().x(None).y(None));
+            create_window(&wm.conn.dpy, COPY_DEPTH_FROM_PARENT, frame, wm.root, size.x, size.y, size.width, size.height, border_width, WindowClass::COPY_FROM_PARENT, COPY_FROM_PARENT, &aux)?;
+            reparent_window(&wm.conn.dpy, win, frame, 0, 0)?;
+            configure_window(&wm.conn.dpy, client.win, &size.aux().x(None).y(None))?;
             if self.hidden {
-                client.hide(wm);
+                client.hide(wm)?;
             } else {
-                client.show(wm);
+                client.show(wm)?;
             }
         }
-        tag.set_layer(wm, frame, focus);
+        tag.set_layer(wm, frame, focus)?;
         if !self.hidden && self.focus {
-            tag.focus_client(wm, frame)
+            tag.focus_client(wm, frame)?;
         } else {
-            change_window_attributes(&wm.dpy, frame, &ChangeWindowAttributesAux::new().border_pixel(wm.theme.border_color_unfocused));
+            change_window_attributes(&wm.conn.dpy, frame, &ChangeWindowAttributesAux::new().border_pixel(wm.theme.border_color_unfocused))?;
         }
-        wm.dpy.flush();
-        frame
+        wm.conn.dpy.flush()?;
+        Ok(frame)
     }
 
     fn process_state(&mut self, state: Atom, atoms: &AtomCollection) {
@@ -360,11 +353,12 @@ impl ClientArgs {
     }
 
     fn process_class(&mut self, class: WmClass) {
-        self.class = String::from_utf8(class.class().to_vec()).unwrap();
+        self.class.replace(String::from_utf8(class.class().to_vec()).unwrap());
     }
 
     fn process_name(&mut self, name: GetPropertyReply) {
-        self.class = String::from_utf8(name.value).unwrap();
+        println!("{:?}", name);
+        self.name.replace(String::from_utf8(name.value).unwrap());
     }
 
     fn process_transient(&mut self, transient: GetPropertyReply) {
@@ -377,33 +371,34 @@ impl ClientArgs {
 }
 
 impl Tag {
-    pub fn unmanage(&mut self, wm: &WindowManager<impl Connection>, win: Window) {
+    pub(crate) fn unmanage(&mut self, wm: &WindowManager, win: Window) -> CWMRes<()> {
         if let Some(client) = self.clients.remove(&win) {
             info!("Unmanaging {}", win);
             let client = client.borrow();
-            let root = self.root.unwrap_or(NONE);
             let layer = &mut self.layers.0[client.layer()];
             layer.remove(client.layer_pos);
             self.focus_stack.unlink_node(client.stack_pos);
-            if let Some(win) = self.focus_stack.front() {
-                self.focus_client(wm, *win);
+            if let Some(win) = self.focus_stack.front().copied() {
+                self.focus_client(wm, win)?;
             } else {
-                set_input_focus(&wm.dpy, InputFocus::POINTER_ROOT, root, CURRENT_TIME); 
+                set_input_focus(&wm.conn.dpy, InputFocus::POINTER_ROOT, wm.root, CURRENT_TIME)?; 
             }
-            destroy_window(&wm.dpy, client.frame);
-            reparent_window(&wm.dpy, client.win, root, 0, 0);
-            client.remove(wm);
+            destroy_window(&wm.conn.dpy, client.frame)?;
+            reparent_window(&wm.conn.dpy, client.win, wm.root, 0, 0)?;
+            client.remove(wm)?;
             self.layout.borrow().print(0);
         }
+        Ok(())
     }
 
-    pub fn manage(&mut self, wm: &WindowManager<impl Connection>, win: Window, mut args: ClientArgs, screen: &Screen) -> (WindowLocation, Window) {
-        let state_cookie = get_property(&wm.dpy, false, win, wm.atoms._NET_WM_STATE, AtomEnum::ATOM, 0, 2048).unwrap();
-        let hints_cookie = WmHints::get(&wm.dpy, win).unwrap();
-        let size_hints_cookie = WmSizeHints::get_normal_hints(&wm.dpy, win).unwrap();
-        let class_cookie = WmClass::get(&wm.dpy, win).unwrap();
-        let name_cookie = get_property(&wm.dpy, false, win, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 2048).unwrap();
-        let transient_cookie = get_property(&wm.dpy, false, win, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW, 0, 1).unwrap();
+    pub(crate) fn manage(&mut self, wm: &WindowManager, win: Window, mut args: ClientArgs, monitor: &Monitor) -> CWMRes<(WindowLocation, Window)> {
+        let state_cookie = get_property(&wm.conn.dpy, false, win, wm.atoms._NET_WM_STATE, AtomEnum::ATOM, 0, 2048)?;
+        let hints_cookie = WmHints::get(&wm.conn.dpy, win)?;
+        let size_hints_cookie = WmSizeHints::get_normal_hints(&wm.conn.dpy, win)?;
+        let class_cookie = WmClass::get(&wm.conn.dpy, win)?;
+        let name_cookie = get_property(&wm.conn.dpy, false, win, AtomEnum::WM_NAME, wm.atoms.UTF8_STRING, 0, 2048)?;
+        let wm_name_cookie = get_property(&wm.conn.dpy, false, win, wm.atoms._NET_WM_NAME, wm.atoms.UTF8_STRING, 0, 2048)?;
+        let transient_cookie = get_property(&wm.conn.dpy, false, win, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW, 0, 1)?;
 
         if let Ok(states) = state_cookie.reply() {
             if let Some(states) = states.value32() {
@@ -412,14 +407,15 @@ impl Tag {
                 }
             }
         }
-        hints_cookie.reply().map(|hints| args.process_hints(hints));
-        size_hints_cookie.reply().map(|size_hints| args.prcoess_size_hints(size_hints));
-        class_cookie.reply().map(|class| args.process_class(class));
-        name_cookie.reply().map(|name| args.process_name(name));
-        transient_cookie.reply().map(|transient| args.process_transient(transient));
+        hints_cookie.reply().map(|hints| args.process_hints(hints))?;
+        size_hints_cookie.reply().map(|size_hints| args.prcoess_size_hints(size_hints))?;
+        class_cookie.reply().map(|class| args.process_class(class))?;
+        name_cookie.reply().map(|name| args.process_name(name))?;
+        wm_name_cookie.reply().map(|name| args.process_name(name))?;
+        transient_cookie.reply().map(|transient| args.process_transient(transient))?;
 
-        let frame = args.build(wm, win, self, screen);
+        let frame = args.build(wm, win, self, monitor)?;
         self.layout.borrow().print(0);
-        (WindowLocation::Client(self.id), frame)
+        Ok((WindowLocation::Client(self.id), frame))
     }
 }

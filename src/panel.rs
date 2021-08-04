@@ -1,19 +1,13 @@
 use x11rb::{
     connection::Connection,
     protocol::xproto::*,
-    COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, atom_manager
 };
 
-use log::info;
-
-use std::{
-    collections::HashMap,
-    cell::RefCell,
-    rc::Rc
+use crate::{
+    utils::Rect,
+    monitor::Monitor,
+    WindowManager, WindowLocation, CWMRes
 };
-
-use crate::utils::Rect;
-use super::{Screen, WindowManager, WindowLocation};
 
 pub struct Panel {
     win: Window,
@@ -29,12 +23,12 @@ struct WMStrut {
 }
 
 impl Panel {
-    fn new(wm: &WindowManager<impl Connection>, win: Window) -> Self {
+    fn new(wm: &WindowManager, win: Window) -> Self {
         let wm_strut = WMStrut::new(wm, win);
         Self { win, wm_strut }
     }
 
-    fn update_reserved_space(&mut self, wm: &WindowManager<impl Connection>) -> bool {
+    fn update_reserved_space(&mut self, wm: &WindowManager) -> bool {
         let wm_strut = WMStrut::new(wm, self.win);
         if wm_strut != self.wm_strut {
             self.wm_strut = wm_strut;
@@ -45,28 +39,30 @@ impl Panel {
     }
 }
 
-impl Screen {
-    pub fn panel_changed(&mut self, wm: &WindowManager<impl Connection>) {
+impl Monitor {
+    pub fn panel_changed(&mut self, wm: &WindowManager) -> CWMRes<()> {
         if let Some(mut tag) = self.tag.as_ref().map(|x| x.borrow_mut()) {
-            tag.set_available(wm, self.free_rect());
+            tag.set_available(wm, self.free_rect())?;
         }
+        Ok(())
         // triger a hook
     }
 
-    pub fn panel_register(&mut self, wm: &WindowManager<impl Connection>, win: Window) -> WindowLocation {
+    pub fn panel_register(&mut self, wm: &WindowManager, win: Window) -> CWMRes<WindowLocation> {
         self.panels.insert(win, Panel::new(wm, win));
-        map_window(&wm.dpy, win);
-        self.panel_changed(wm);
-        WindowLocation::Panel(self.id)
+        map_window(&wm.conn.dpy, win)?;
+        self.panel_changed(wm)?;
+        Ok(WindowLocation::Panel(self.id))
     }
 
-    pub fn panel_unregister(&mut self, wm: &WindowManager<impl Connection>, win: Window) {
-        if let Some(panel) = self.panels.remove(&win) {
-            self.panel_changed(wm)
+    pub fn panel_unregister(&mut self, wm: &WindowManager, win: Window) -> CWMRes<()> {
+        if self.panels.remove(&win).is_some() {
+            self.panel_changed(wm)?;
         }
+        Ok(())
     }
 
-    pub fn panel_property_changed(&mut self, wm: &WindowManager<impl Connection>, win: Window, atom: Atom) {
+    pub fn panel_property_changed(&mut self, wm: &WindowManager, win: Window, atom: Atom) {
         if atom == wm.atoms._NET_WM_STRUT || atom == wm.atoms._NET_WM_STRUT_PARTIAL {
             if let Some(panel) = self.panels.get_mut(&win) {
                 panel.update_reserved_space(wm);
@@ -85,12 +81,12 @@ impl Screen {
 }
 
 impl WMStrut {
-    fn new(wm: &WindowManager<impl Connection>, win: Window) -> Self {
+    fn new(wm: &WindowManager, win: Window) -> Self {
         let (left, right, top, bottom) = {
-            if let Some(wm_struct_partial) = get_property(&wm.dpy, false, win, wm.atoms._NET_WM_STRUT_PARTIAL, AtomEnum::CARDINAL, 0, 12).ok().and_then(|x| x.reply().ok()) {
+            if let Some(wm_struct_partial) = get_property(&wm.conn.dpy, false, win, wm.atoms._NET_WM_STRUT_PARTIAL, AtomEnum::CARDINAL, 0, 12).ok().and_then(|x| x.reply().ok()) {
                 let vals: Vec<u32> = wm_struct_partial.value32().unwrap().collect();
                 (vals[0], vals[1], vals[2], vals[3])
-            } else if let Some(wm_struct) = get_property(&wm.dpy, false, win, wm.atoms._NET_WM_STRUT, AtomEnum::CARDINAL, 0, 4).ok().and_then(|x| x.reply().ok()) {
+            } else if let Some(wm_struct) = get_property(&wm.conn.dpy, false, win, wm.atoms._NET_WM_STRUT, AtomEnum::CARDINAL, 0, 4).ok().and_then(|x| x.reply().ok()) {
                 let vals: Vec<u32> = wm_struct.value32().unwrap().collect();
                 (vals[0], vals[1], vals[2], vals[3])
             } else {

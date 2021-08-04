@@ -24,6 +24,42 @@ pub fn keymap_xmodmap() -> HashMap<String, u8> {
     }).collect::<HashMap<_, _>>()
 }
 
+pub fn three_mut<T>(vec: &mut Vec<T>, idx: (usize, usize, usize)) -> Option<(&mut T, &mut T, &mut T)> {
+    match idx {
+        (i1, i2, i3) if i1 > i2 && i2 > i3 => {
+            let (b, a) = vec.split_at_mut(i1);
+            let (c, b) = b.split_at_mut(i2);
+            Some((&mut a[0], &mut b[0], &mut c[i3]))
+        },
+        (i1, i2, i3) if i1 > i3 && i3 > i2 => {
+            let (b, a) = vec.split_at_mut(i1);
+            let (c, b) = b.split_at_mut(i3);
+            Some((&mut a[0], &mut c[i2], &mut b[0]))
+        },
+        (i1, i2, i3) if i2 > i1 && i1 > i3 => {
+            let (b, a) = vec.split_at_mut(i2);
+            let (c, b) = b.split_at_mut(i1);
+            Some((&mut b[0], &mut a[0], &mut c[i3]))
+        },
+        (i1, i2, i3) if i2 > i3 && i3 > i1 => {
+            let (b, a) = vec.split_at_mut(i2);
+            let (c, b) = b.split_at_mut(i3);
+            Some((&mut c[i1], &mut a[0], &mut b[0]))
+        },
+        (i1, i2, i3) if i3 > i2 && i2 > i1 => {
+            let (b, a) = vec.split_at_mut(i3);
+            let (c, b) = b.split_at_mut(i2);
+            Some((&mut c[i1], &mut b[0], &mut a[0]))
+        },
+        (i1, i2, i3) if i3 > i1 && i1 > i2 => {
+            let (b, a) = vec.split_at_mut(i3);
+            let (c, b) = b.split_at_mut(i1);
+            Some((&mut b[0], &mut c[i2], &mut a[0]))
+        },
+        _ => None
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Rect {
     pub x: i16,
@@ -42,6 +78,13 @@ impl Rect {
         ConfigureWindowAux::new().x(self.x as i32).y(self.y as i32).width(self.width as u32).height(self.height as u32)
     }
 
+    pub fn aux_border(&self, width: u16) -> (ConfigureWindowAux, ConfigureWindowAux) {
+        (
+            ConfigureWindowAux::new().x(self.x as i32).y(self.y as i32).width((self.width - width * 2) as u32).height((self.height - width * 2) as u32).border_width(width as u32),
+            ConfigureWindowAux::new().width((self.width - width * 2) as u32).height((self.height - width * 2) as u32),
+        )
+    }
+
     pub fn copy(&mut self, other: &Rect) {
         self.x = other.x;
         self.y = other.y;
@@ -51,6 +94,28 @@ impl Rect {
 
     pub fn contains(&self, point: &(i16, i16)) -> bool {
         point.0 > self.x && point.0 < self.x + self.width as i16 && point.1 > self.y && point.1 < self.y + self.height as i16 
+    }
+
+    pub fn split_rects(&self, split: f32, vert: bool) -> (Rect, Rect) {
+        let r1_x = self.x;
+        let r1_y = self.y;
+        if vert {
+            let r1_width = (self.width as f32 * split).round() as _;
+            let r1_height = self.height;
+            let r2_x = self.x + r1_width as i16;
+            let r2_y = self.y;
+            let r2_width = self.width - r1_width;
+            let r2_height = self.height;
+            (Rect::new(r1_x, r1_y, r1_width, r1_height), Rect::new(r2_x, r2_y, r2_width, r2_height))
+        } else {
+            let r1_width = self.width;
+            let r1_height = (self.height as f32 * split).round() as _;
+            let r2_x = self.x;
+            let r2_y = self.y + r1_height as i16;
+            let r2_width = self.width;
+            let r2_height = self.height - r1_height;
+            (Rect::new(r1_x, r1_y, r1_width, r1_height), Rect::new(r2_x, r2_y, r2_width, r2_height))
+        }
     }
 
     pub fn split(&self, split: f32, vert: bool, rect1: &mut Rect, rect2: &mut Rect) {
@@ -247,6 +312,87 @@ pub mod stack {
     
                 self.tail = node;
                 self.len += 1;
+            }
+        }
+    }
+}
+
+pub mod stack_ {
+    pub struct StackElem<T> {
+        item: T,
+        next: Option<usize>,
+        prev: Option<usize>,
+    }
+    
+    impl<T> StackElem<T> {
+        fn new(item: T) -> Self {
+            Self { item, next: None, prev: None }
+        }
+    }
+    
+    #[derive(Default)]
+    pub struct Stack<T> {
+        items: Vec<StackElem<T>>,
+        free: Vec<usize>,
+        head: Option<usize>,
+        tail: Option<usize>,
+    }
+    
+    impl<T> Stack<T> {
+        pub fn front(&self) -> Option<&T> {
+            self.head.map(|x| &self.items[x].item)
+        }
+    
+        pub fn back(&self) -> Option<&T> {
+            self.tail.map(|x| &self.items[x].item)
+        }
+    
+        pub fn push_front(&mut self, item: T) -> usize {
+            let idx = if let Some(idx) = self.free.pop() {
+                self.items[idx].item = item;
+                idx
+            } else {
+                self.items.push(StackElem::new(item));
+                self.items.len() - 1
+            };
+            self.items[idx].next = self.head;
+    
+            match self.head {
+                None => self.tail = Some(idx),
+                Some(head_idx) => self.items[head_idx].prev = Some(idx)
+            }
+    
+            self.head = Some(idx);
+            idx
+        }
+    
+        pub fn push_back(&mut self, item: T) -> usize {
+            let idx = if let Some(idx) = self.free.pop() {
+                self.items[idx].item = item;
+                idx
+            } else {
+                self.items.push(StackElem::new(item));
+                self.items.len() - 1
+            };
+            self.items[idx].prev = self.tail;
+    
+            match self.tail {
+                None => self.head = Some(idx),
+                Some(tail_idx) => self.items[tail_idx].next = Some(idx)
+            }
+    
+            self.tail = Some(idx);
+            idx
+        }
+    
+        pub fn remove_node(&mut self, idx: usize) {
+            match self.items[idx].prev {
+                Some(prev_idx) => self.items[prev_idx].next = self.items[idx].next,
+                None => self.head = self.items[idx].next
+            }
+            match self.items[idx].next {
+                Some(next_idx) => self.items[next_idx].prev = self.items[idx].prev,
+                None => self.tail = self.items[idx].prev
             }
         }
     }
