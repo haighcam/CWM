@@ -1,11 +1,14 @@
 
 use crate::utils::{Rect, three_mut};
-use crate::{Connections, CwmRes};
+use crate::Aux;
+use serde::{Serialize, Deserialize};
 use super::Tag;
+use anyhow::Result;
+use log::info;
 
 
-#[derive(PartialEq)]
-enum Side {
+#[derive(PartialEq, Serialize, Deserialize, Debug)]
+pub enum Side {
     Left,
     Right,
     Top,
@@ -18,7 +21,7 @@ pub enum Split {
     Vertical
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct NodeInfo {
     pub split: Split,
     pub ratio: f32,
@@ -36,7 +39,7 @@ impl NodeInfo {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LeafInfo {
     floating: Rect,
     min_size: (u16, u16),
@@ -44,7 +47,7 @@ pub struct LeafInfo {
     client: usize
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum NodeContents {
     Node(NodeInfo),
     Leaf(LeafInfo),
@@ -65,6 +68,7 @@ impl NodeContents {
     }
 }
 
+#[derive(Debug)]
 pub struct Node {
     pub parent: Option<(usize, bool)>,
     pub absent: bool,
@@ -94,12 +98,13 @@ impl Tag {
         }
     }
 
-    fn resize_node(&mut self, node: usize, to_process: &mut Vec<usize>) {
+    fn resize_node(&mut self, aux: &Aux, node: usize, to_process: &mut Vec<usize>) {
         if let Some((_child1, _child2)) = if let NodeContents::Node(node) = &self.nodes[node].info {
             Some((node.first_child, node.second_child))
         } else {
             None
         } {
+            info!("{} {} {}",node, _child1, _child2);
             let (node, child1, child2) = three_mut(&mut self.nodes, (node, _child1, _child2)).unwrap();
             if let NodeContents::Node(info) = &node.info {
                 match (child1.absent, child2.absent) {
@@ -112,7 +117,7 @@ impl Tag {
                         to_process.push(_child1);    
                     },
                     (false, false) => {
-                        node.rect.split(info.ratio, info.split == Split::Vertical, &mut child1.rect, &mut child2.rect);
+                        node.rect.split(info.ratio, info.split == Split::Vertical, &mut child1.rect, &mut child2.rect, aux.theme.gap);
                         to_process.push(_child2);
                         to_process.push(_child1);
                     },
@@ -132,7 +137,8 @@ impl Tag {
         }
     }
 
-    pub fn split_leaf(&mut self, conn: &Connections, leaf_idx: usize, split: Option<Split>, absent: bool, idx: usize, info: NodeContents) -> CwmRes<()> {
+    pub fn split_leaf(&mut self, aux: &Aux, leaf_idx: usize, split: Option<Split>, absent: bool, idx: usize, info: NodeContents) -> Result<()> {
+        info!("{:?}", self.nodes);
         let rect = self.nodes[leaf_idx].rect.clone();
         let split = split.unwrap_or_else(|| {
             if rect.width > rect.height {
@@ -173,17 +179,17 @@ impl Tag {
         self.clients[idx].node = second_child;
         // recompute child sizes of node
         if leaf_absent && !absent {
-            self.propagate_absent(conn, leaf_idx)?;
+            self.propagate_absent(aux, leaf_idx)?;
         } else if !(leaf_absent && absent) {
-            self.resize_node(leaf_idx, &mut vec![]);
+            self.resize_node(aux, leaf_idx, &mut vec![]);
         }
         if !leaf_absent && idx2.is_some() {
-            self.apply_pos_size(conn, idx2.unwrap(), &self.nodes[first_child].rect, true)?;
+            self.apply_pos_size(aux, idx2.unwrap(), &self.nodes[first_child].rect, true)?;
         }
         Ok(())
     }
 
-    fn propagate_absent(&mut self, conn: &Connections, node: usize) -> CwmRes<()> {
+    fn propagate_absent(&mut self, aux: &Aux, node: usize) -> Result<()> {
         let mut parent = Some(node);
         let mut prev_parent = node;
         while parent.is_some() {
@@ -213,9 +219,9 @@ impl Tag {
             let node_ = q.pop().unwrap();
             let node = &self.nodes[node_];
             match &node.info {
-                NodeContents::Node(_) => self.resize_node(node_, &mut q),
+                NodeContents::Node(_) => self.resize_node(aux, node_, &mut q),
                 NodeContents::Leaf(leaf) => if !node.absent {
-                    self.apply_pos_size(conn, leaf.client, &node.rect, true)?
+                    self.apply_pos_size(aux, leaf.client, &node.rect, true)?
                 },
                 _ => ()
             }
@@ -272,7 +278,7 @@ impl Tag {
         None
     }
 
-    pub fn move_client(&mut self, conn: &Connections, client_: usize, delta: (i16, i16), pos: &(i16, i16)) -> CwmRes<()> {
+    pub fn move_client(&mut self, aux: &Aux, client_: usize, delta: (i16, i16), pos: &(i16, i16)) -> Result<()> {
         let client = &self.clients[client_];
         if !client.flags.fullscreen {
             if client.flags.floating {
@@ -281,7 +287,7 @@ impl Tag {
                     leaf.floating.y += delta.1;
                 }
                 if let NodeContents::Leaf(leaf) = &self.nodes[client.node].info {
-                    self.apply_pos_size(conn, client_, &leaf.floating, true)?;
+                    self.apply_pos_size(aux, client_, &leaf.floating, true)?;
                 }
             } else if !self.nodes[client.node].rect.contains(pos) {
                 if let Some(other) = self.client_under_cursor(pos) {
@@ -292,15 +298,15 @@ impl Tag {
                     let info = self.nodes[node].info.clone();
                     self.nodes[node].info = self.nodes[other_node].info.clone();
                     self.nodes[other_node].info = info;
-                    self.apply_pos_size(conn, client_, &self.nodes[other_node].rect, true)?;
-                    self.apply_pos_size(conn, other, &self.nodes[node].rect, true)?;
+                    self.apply_pos_size(aux, client_, &self.nodes[other_node].rect, true)?;
+                    self.apply_pos_size(aux, other, &self.nodes[node].rect, true)?;
                 }
             }
         }
         Ok(())
     }
 
-    pub fn resize_client(&mut self, conn: &Connections, client: usize, delta: (i16, i16), left: bool, top: bool) -> CwmRes<()> {
+    pub fn resize_client(&mut self, aux: &Aux, client: usize, delta: (i16, i16), left: bool, top: bool) -> Result<()> {
         let (fullscreen, floating, node) = {
             let client = &self.clients[client];
             (client.flags.fullscreen, client.flags.fullscreen, client.node)
@@ -322,7 +328,7 @@ impl Tag {
                     }
                 }
                 if let NodeContents::Leaf(leaf) = &self.nodes[node].info {
-                    self.apply_pos_size(conn, client, &leaf.floating, true)?;
+                    self.apply_pos_size(aux, client, &leaf.floating, true)?;
                 }
             } else {
                 let (parent_h, depth1) = self.get_split_parent(node, if left {Side::Left} else {Side::Right});
@@ -352,9 +358,9 @@ impl Tag {
                     let node_ = q.pop().unwrap();
                     let node = &self.nodes[node_];
                     match &node.info {
-                        NodeContents::Node(_) => self.resize_node(node_, &mut q),
+                        NodeContents::Node(_) => self.resize_node(aux, node_, &mut q),
                         NodeContents::Leaf(leaf) => if !node.absent {
-                            self.apply_pos_size(conn, leaf.client, &node.rect, true)?
+                            self.apply_pos_size(aux, leaf.client, &node.rect, true)?
                         },
                         _ => ()  
                     }
@@ -364,7 +370,7 @@ impl Tag {
         Ok(())
     }
 
-    pub fn set_absent(&mut self, conn: &Connections, client: usize, absent: bool) -> CwmRes<()> {
+    pub fn set_absent(&mut self, aux: &Aux, client: usize, absent: bool) -> Result<()> {
         if let Some(parent) = {
             let node = &mut self.nodes[self.clients[client].node];
             if node.absent != absent {
@@ -374,19 +380,24 @@ impl Tag {
                 None
             }
         } {
-            self.propagate_absent(conn, parent)?;
+            self.propagate_absent(aux, parent)?;
         }
         Ok(())
     }
 
-    pub fn set_tiling_size(&mut self, conn: &Connections, tiling_size: Rect) -> CwmRes<()> {
+    pub fn set_tiling_size(&mut self, aux: &Aux, mut tiling_size: Rect) -> Result<()> {
+        tiling_size.x += aux.theme.gap as i16 + aux.theme.left_margin;
+        tiling_size.y += aux.theme.gap as i16 + aux.theme.top_margin;
+        tiling_size.width -= (aux.theme.gap as i16 * 2 + aux.theme.right_margin + aux.theme.left_margin) as u16;
+        tiling_size.height -= (aux.theme.gap as i16 * 2 + aux.theme.bottom_margin + aux.theme.top_margin) as u16;
         if tiling_size != self.tiling_size {
-            self.resize_tiled(conn, 0, Some(&tiling_size))?;
+            self.resize_tiled(aux, 0, Some(&tiling_size))?;
+            self.tiling_size = tiling_size;
         }
         Ok(())
     }
 
-    fn resize_tiled(&mut self, conn: &Connections, node: usize, size: Option<&Rect>) -> CwmRes<()> {
+    fn resize_tiled(&mut self, aux: &Aux, node: usize, size: Option<&Rect>) -> Result<()> {
         if let Some(size) = size {
             self.nodes[node].rect.copy(size);
         }
@@ -395,9 +406,9 @@ impl Tag {
             let node_ = q.pop().unwrap();
             let node = &self.nodes[node_];
             match &node.info {
-                NodeContents::Node(..) => self.resize_node(node_, &mut q),
+                NodeContents::Node(..) => self.resize_node(aux, node_, &mut q),
                 NodeContents::Leaf(leaf) => if !node.absent {
-                    self.apply_pos_size(conn, leaf.client, &node.rect, true)?
+                    self.apply_pos_size(aux, leaf.client, &node.rect, true)?
                 },
                 _ => ()
             }
@@ -405,14 +416,14 @@ impl Tag {
         Ok(())
     }
 
-    pub fn resize_all(&mut self, conn: &Connections, node: usize, available: &Rect, new_size: &Rect) -> CwmRes<()> {
+    pub fn resize_all(&mut self, aux: &Aux, node: usize, available: &Rect, new_size: &Rect) -> Result<()> {
         self.nodes[node].rect.copy(available);
         let mut q = vec![node];
         while !q.is_empty() {
             let node_ = q.pop().unwrap();
             let node = &self.nodes[node_];
             match &node.info {
-                NodeContents::Node(..) => self.resize_node(node_, &mut q),
+                NodeContents::Node(..) => self.resize_node(aux, node_, &mut q),
                 NodeContents::Leaf(leaf) => if !node.absent {
                     let leaf_client = leaf.client;
                     let floating = {
@@ -433,7 +444,7 @@ impl Tag {
                     } else {
                         (&node.rect, true)
                     };
-                    self.apply_pos_size(conn, leaf_client, &node.rect, border)?
+                    self.apply_pos_size(aux, leaf_client, rect, border)?
                 },
                 _ => ()
             }
@@ -441,7 +452,7 @@ impl Tag {
         Ok(())
     }
 
-    pub fn remove_node(&mut self, conn: &Connections, node: usize) -> CwmRes<()> {
+    pub fn remove_node(&mut self, aux: &Aux, node: usize) -> Result<()> {
         let parent = self.nodes[node].parent;
         self.nodes[node].info = NodeContents::Empty;
         self.free_nodes.push(node);
@@ -467,8 +478,8 @@ impl Tag {
                     self.clients[leaf.client].node = parent_;
                 }
             }
-            self.resize_tiled(conn, parent_, None)?;
-            self.propagate_absent(conn, parent_)?;
+            self.resize_tiled(aux, parent_, None)?;
+            self.propagate_absent(aux, parent_)?;
         }
         Ok(())
     }

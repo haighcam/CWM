@@ -1,23 +1,15 @@
-use x11rb::{
-    connection::Connection,
-    protocol::xproto::*,
-    properties::*,
-    x11_utils::Serialize,
-    COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE
-};
-use std::collections::HashMap;
-use log::info;
-use crate::utils::{Rect, stack_::Stack};
-use crate::{Connections, CwmRes};
-use crate::config::Theme;
+use x11rb::protocol::xproto::*;
+use crate::utils::Stack;
+use crate::Aux;
 use super::Tag;
-
+use anyhow::{Context, Result};
+use serde::{Serialize, Deserialize};
 pub enum Layer {
     Single(Option<usize>),
     Multi(Stack<usize>)
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum StackLayer {
     Below,
     Normal,
@@ -74,20 +66,20 @@ impl StackLayer {
 }   
 
 impl Tag {
-    pub fn switch_layer(&mut self, conn: &Connections, idx: usize) -> CwmRes<()> {
+    pub fn switch_layer(&mut self, aux: &Aux, idx: usize) -> Result<()> {
         let client = &mut self.clients[idx];
         let (prev_layer, layer_pos) = client.layer_pos;
         self.layers[prev_layer].remove(layer_pos);
         match (prev_layer % Layer::COUNT == Layer::TILING, client.flags.get_layer() % Layer::COUNT == Layer::TILING) {
-            (false, true) => self.set_absent(conn, idx, false)?,
-            (true, false) => self.set_absent(conn, idx, true)?,
+            (false, true) => self.set_absent(aux, idx, false)?,
+            (true, false) => self.set_absent(aux, idx, true)?,
             _ => ()
         }
 
-        self.set_layer(conn, idx, true)
+        self.set_layer(aux, idx, true)
     }
 
-    pub fn set_layer(&mut self, conn: &Connections, idx: usize, focus: bool) -> CwmRes<()> {
+    pub fn set_layer(&mut self, aux: &Aux, idx: usize, focus: bool) -> Result<()> {
         let client = &mut self.clients[idx];
         let layer = client.layer.get() + client.flags.get_layer();
         let (layer_pos, old) = if focus {
@@ -97,21 +89,20 @@ impl Tag {
         };
         client.layer_pos = (layer, layer_pos);
         let client = &self.clients[idx];
-        let (mut aux, aux2) = self.get_rect(idx).unwrap().aux_border(if client.flags.fullscreen {0} else {client.border_width});
-        info!("{:?}", aux);
-        aux = if let Some(sibling) = self.get_layer_bound(layer + if focus {1} else {0}) {
-            aux.sibling(self.clients[sibling].frame).stack_mode(StackMode::BELOW)
+        let (mut aux1, aux2) = self.get_rect(idx).unwrap().aux(if client.flags.fullscreen {0} else {client.border_width});
+        aux1 = if let Some(sibling) = self.get_layer_bound(layer + if focus {1} else {0}) {
+            aux1.sibling(self.clients[sibling].frame).stack_mode(StackMode::BELOW)
         } else {
-            aux.stack_mode(StackMode::ABOVE)
+            aux1.stack_mode(StackMode::ABOVE)
         };
-        configure_window(&conn.dpy, client.frame, &aux)?;
-        configure_window(&conn.dpy, client.win, &aux2)?;
+        configure_window(&aux.dpy, client.frame, &aux1).context(crate::code_loc!())?;
+        configure_window(&aux.dpy, client.win, &aux2).context(crate::code_loc!())?;
         if let Some(idx) = old {
             self.clients[idx].flags.fullscreen = false;
             if !self.clients[idx].flags.floating {
-                self.set_absent(conn, idx, false)?
+                self.set_absent(aux, idx, false)?
             }
-            self.set_layer(conn, idx, true)?
+            self.set_layer(aux, idx, true)?
         }
         Ok(())
     }

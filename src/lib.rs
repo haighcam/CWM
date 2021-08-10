@@ -5,17 +5,15 @@ use x11rb::{
     atom_manager, NONE
 };
 use std::{
-    os::unix::io::{AsRawFd, RawFd},
-    collections::HashMap,
-    cell::{RefCell, Cell},
-    rc::Rc,
+    collections::{HashMap, HashSet},
 };
-use nix::poll::{poll, PollFd, PollFlags};
+
+use anyhow::{Context, Result};
 
 use log::info;
 mod utils;
 mod config;
-use config::{Theme, Keys};
+use config::IGNORED_MODS;
 mod monitor;
 use monitor::Monitor;
 mod tag;
@@ -23,20 +21,9 @@ use tag::Tag;
 mod events;
 use events::EventHandler;
 pub mod connections;
-use connections::Connections;
+use connections::Aux;
 mod hooks;
 use hooks::Hooks;
-mod desktop_window;
-mod panel;
-mod layout;
-mod layers;
-mod client;
-mod error;
-use error::CWMRes;
-
-type CwmRes<T> = CWMRes<T>;
-
-pub mod new;
 
 atom_manager! {
     pub AtomCollection: AtomCollectionCookie {
@@ -58,134 +45,116 @@ atom_manager! {
     }
 }
 
-pub struct WindowManager {
-    conn: Connections,
-    monitors: Vec<Option<Rc<RefCell<Monitor>>>>,
-    monitor: usize,
-    free_monitors: Vec<usize>,
-    tags: Vec<Option<Rc<RefCell<Tag>>>>,
-    free_tags: Vec<usize>,
-    windows: HashMap<Window, WindowLocation>,
-    atoms: AtomCollection,
-    theme: Theme,
-    running: Cell<bool>,
-    root: Window,
-    hooks: RefCell<Hooks>
+enum WindowLocation {
+    Client(Atom, usize),
+    Panel(Atom),
+    DesktopWindow(Atom),
+    _Unmanaged
 }
 
-#[derive(Debug)]
-pub enum WindowLocation {
-    Client(usize), // tag
-    Panel(usize), // monitor
-    DesktopWindow(usize), // monitor
-    Unmanaged
+pub struct WindowManager {
+    root: Window,
+    aux: Aux,
+    tags: HashMap<Atom, Tag>,
+    free_tags: HashSet<Atom>,
+    temp_tags: HashSet<Atom>,
+    tag_order: Vec<Atom>,
+    monitors: HashMap<Atom, Monitor>,
+    focused_monitor: Atom,
+    prev_monitor: Atom,
+    windows: HashMap<Window, WindowLocation>,
+    running: bool
 }
 
 impl WindowManager {
-    fn monitor(&self, id: usize) -> Option<Rc<RefCell<Monitor>>> {
-        self.monitors.get(id).and_then(|x| x.clone())
-    }
-    fn tag(&self, id: usize) -> Option<Rc<RefCell<Tag>>> {
-        self.tags.get(id).and_then(|x| x.clone())
-    }
-
-    fn current_monitor(&self) -> Option<Rc<RefCell<Monitor>>> {
-        self.monitors.get(self.monitor).and_then(|monitor| monitor.clone())
-    }
-
-    fn current_tag(&self) -> Option<Rc<RefCell<Tag>>> {
-        self.monitors.get(self.monitor).and_then(|monitor| monitor.as_ref()).and_then(|monitor| monitor.borrow().tag().cloned())
-    }
-
-    fn manage_window(&mut self, win: Window) -> CWMRes<()> {
-        if let Some(monitor) = self.current_monitor() {
-            let (location, win) = monitor.borrow_mut().manage_window(self, win)?;
-            self.windows.insert(win, location);
-        }
-        Ok(())
-    }
-
-    fn unmanage_window(&mut self, win: Window) -> CWMRes<()> {
+    fn unmanage_window(&mut self, win: Window) -> Result<()> {
         if let Some(location) = self.windows.remove(&win) {
-            info!("unmanage window, {} {:?}", win, location);
+            //info!("unmanage window, {} {:?}", win, location);
             match location {
-                WindowLocation::Client(tag) => if let Some(mut tag) = self.tags[tag].as_ref().map(|x| x.borrow_mut()) {
-                    tag.unmanage(self, win)?
-                },
-                WindowLocation::DesktopWindow(monitor) => if let Some(mut monitor) = self.monitors[monitor].as_ref().map(|x| x.borrow_mut()) {
-                    monitor.desktop_window_unregister(win)
-                },
-                WindowLocation::Panel(monitor) => if let Some(mut monitor) = self.monitors[monitor].as_ref().map(|x| x.borrow_mut()) {
-                    monitor.panel_unregister(self, win)?
-                },
+                WindowLocation::Client(tag, client) => self.unmanage_client(tag, client)?,
+                WindowLocation::DesktopWindow(mon) => self.desktop_window_unregister(mon, win),
+                WindowLocation::Panel(mon) => self.panel_unregister(mon, win)?,
                 _ => ()
             }
         }
         Ok(())
     }
 
-    fn new(keys: &Keys) -> CWMRes<Self> {
+    fn new() -> Result<Self> {
         let (dpy, pref_screen) = RustConnection::connect(None).unwrap();
         let root = dpy.setup().roots[pref_screen].root;
-        let atoms_cookie = AtomCollection::new(&dpy)?;
-        let monitors_cookie = get_monitors(&dpy, root, true)?;
-        let theme = Theme::default();
-        let tags = (&["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"]).iter().enumerate().map(|(id, &name)| Some(Rc::new(RefCell::new(Tag::new(id, name))))).collect();
-        change_window_attributes(&dpy, root, &ChangeWindowAttributesAux::new().event_mask(EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY | EventMask::STRUCTURE_NOTIFY))?;
-        ungrab_key(&dpy, 0, root, ModMask::ANY)?;
-        ungrab_button(&dpy, ButtonIndex::ANY, root, ModMask::ANY)?;
+        let monitors_cookie = get_monitors(&dpy, root, true).context(crate::code_loc!())?;
+        change_window_attributes(&dpy, root, &ChangeWindowAttributesAux::new().event_mask(EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY | EventMask::STRUCTURE_NOTIFY)).context(crate::code_loc!())?;
+        ungrab_key(&dpy, 0, root, ModMask::ANY).context(crate::code_loc!())?;
+        ungrab_button(&dpy, ButtonIndex::ANY, root, ModMask::ANY).context(crate::code_loc!())?;
         let event_mask: u16 = u32::from(EventMask::BUTTON_PRESS) as u16;
-        for &_m in &Keys::IGNORED_MODS {
-            for (m, k, _) in keys.iter() {
-                grab_key(&dpy, true, root, *m | _m, *k, GrabMode::ASYNC, GrabMode::ASYNC)?;
-            }
-            grab_button(&dpy, false, root, event_mask, GrabMode::ASYNC, GrabMode::ASYNC, root, NONE, ButtonIndex::M3, u16::from(ModMask::M1) | _m)?;
+        for &_m in &IGNORED_MODS {
+            grab_button(&dpy, false, root, event_mask, GrabMode::ASYNC, GrabMode::ASYNC, root, NONE, ButtonIndex::M3, u16::from(ModMask::M1) | _m).context(crate::code_loc!())?;
         }
-        grab_button(&dpy, false, root, event_mask, GrabMode::SYNC, GrabMode::ASYNC, root, NONE, ButtonIndex::M1, u16::from(ModMask::ANY))?;
-        dpy.flush()?;
-        let atoms = atoms_cookie.reply()?;
-        let monitors = monitors_cookie.reply()?;
-
+        grab_button(&dpy, false, root, event_mask, GrabMode::SYNC, GrabMode::ASYNC, root, NONE, ButtonIndex::M1, u16::from(ModMask::ANY)).context(crate::code_loc!())?;
+        dpy.flush().context(crate::code_loc!())?;
+        let monitors = monitors_cookie.reply().context(crate::code_loc!())?;
+        select_input(&dpy, root, NotifyMask::SCREEN_CHANGE).context(crate::code_loc!())?;
         let mut wm = Self {
-            conn: Connections::new(dpy),
-            monitors: Vec::new(),
-            monitor: 0,
-            free_monitors: Vec::new(),
-            tags,
-            free_tags: Vec::new(),
-            windows: HashMap::new(),
-            atoms,
-            theme,
-            running: Cell::new(true),
             root,
-            hooks: RefCell::new(Hooks::default())
+            aux: Aux::new(dpy)?,
+            monitors: HashMap::new(),
+            tags: HashMap::new(),
+            free_tags: HashSet::new(),
+            temp_tags: HashSet::new(),
+            tag_order: Vec::new(),
+            focused_monitor: 0,
+            prev_monitor: 0,
+            windows: HashMap::new(),
+            running: true
         };
-        for (id, monitor) in monitors.monitors.into_iter().enumerate() {
-            if monitor.primary {
-                wm.monitor = id;
-            }
-            wm.add_monitor(Some(id), monitor)?;
+
+        for tag in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"] {
+            wm.add_tag(tag)?;
         }
+
+        let mut primary = None;
+        for (i, monitor) in monitors.monitors.into_iter().enumerate() {
+            if monitor.primary {
+                primary.replace(monitor.name);
+            }
+            info!("addng monitor {:?}", monitor);
+            let mon = wm.add_monitor(None, monitor)?;
+            if i == 0 {
+                wm.focused_monitor = mon;
+                wm.prev_monitor = mon;
+            }
+        }
+        if let Some(mon) = primary {
+            wm.focused_monitor = mon;
+        }
+
         Ok(wm)
     }
 }
 
 pub fn run_wm() {
-    let keys = Keys::default();
-    let mut wm = WindowManager::new(&keys).unwrap();
-    let mut event_handler = EventHandler::new(keys);
+    let mut wm = WindowManager::new().unwrap();
+    let mut event_handler = EventHandler::new();
+    wm.aux.hooks.config();
 
-    while wm.running.get() {
-        while let Some(event) = wm.conn.dpy.poll_for_event().unwrap_or_else(|_| {
-            wm.running.set(false);
+    while wm.running {
+        wm.aux.wait_for_updates();
+        while let Some(event) = wm.aux.dpy.poll_for_event().unwrap_or_else(|_| {
+            wm.running = false;
             None
         }) {
             event_handler.handle_event(&mut wm, event).unwrap();
         }
 
-        wm.handle_connections();
-        wm.conn.dpy.flush().unwrap();
-        wm.conn.wait_for_updates();
-
+        wm.handle_connections().unwrap();
+        wm.aux.dpy.flush().unwrap();
     }
+}
+
+#[macro_export]
+macro_rules! code_loc {
+    () => {
+        format!("{}:{}", file!(), line!())
+    };
 }
