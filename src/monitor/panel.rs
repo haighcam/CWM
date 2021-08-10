@@ -1,9 +1,9 @@
-use x11rb::protocol::xproto::*;
+use super::{super::WindowManager, Monitor, WindowLocation};
 use crate::utils::Rect;
 use crate::Aux;
 use anyhow::{Context, Result};
 use log::info;
-use super::{Monitor, WindowLocation, super::WindowManager};
+use x11rb::protocol::xproto::*;
 
 #[derive(Debug)]
 pub struct Panel {
@@ -39,14 +39,26 @@ impl Panel {
 impl WindowManager {
     pub fn panel_changed(&mut self, mon: Atom) -> Result<()> {
         let mon = self.monitors.get(&mon).unwrap();
-        self.tags.get_mut(&mon.focused_tag).unwrap().set_tiling_size(&self.aux, mon.free_rect())
+        self.tags
+            .get_mut(&mon.focused_tag)
+            .unwrap()
+            .set_tiling_size(&self.aux, mon.free_rect())
         // triger a hook
     }
 
     pub fn panel_register(&mut self, mon: Atom, win: Window) -> Result<()> {
         info!("panel registered {} mon: {}", win, mon);
-        self.monitors.get_mut(&mon).unwrap().panels.insert(win, Panel::new(&self.aux, win)?);
-        change_window_attributes(&self.aux.dpy, win, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE)).context(crate::code_loc!())?;
+        self.monitors
+            .get_mut(&mon)
+            .unwrap()
+            .panels
+            .insert(win, Panel::new(&self.aux, win)?);
+        change_window_attributes(
+            &self.aux.dpy,
+            win,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+        )
+        .context(crate::code_loc!())?;
         map_window(&self.aux.dpy, win).context(crate::code_loc!())?;
         self.panel_changed(mon)?;
         self.windows.insert(win, WindowLocation::Panel(mon));
@@ -54,8 +66,20 @@ impl WindowManager {
     }
 
     pub fn panel_unregister(&mut self, mon: Atom, win: Window) -> Result<()> {
-        if self.monitors.get_mut(&mon).unwrap().panels.remove(&win).is_some() {
-            change_window_attributes(&self.aux.dpy, win, &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT)).context(crate::code_loc!())?;
+        if self
+            .monitors
+            .get_mut(&mon)
+            .unwrap()
+            .panels
+            .remove(&win)
+            .is_some()
+        {
+            change_window_attributes(
+                &self.aux.dpy,
+                win,
+                &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT),
+            )
+            .context(crate::code_loc!())?;
             self.panel_changed(mon)?;
         }
         Ok(())
@@ -75,24 +99,53 @@ impl WindowManager {
 }
 impl Monitor {
     fn panel_reserved_space(&self) -> WMStrut {
-        self.panels.values().fold(WMStrut::default(), |x, y| x.max(&y.wm_strut))
+        self.panels
+            .values()
+            .fold(WMStrut::default(), |x, y| x.max(&y.wm_strut))
     }
 
     pub fn free_rect(&self) -> Rect {
         let strut = self.panel_reserved_space();
-        Rect::new(self.size.x + strut.left as i16, self.size.y + strut.top as i16, self.size.width - (strut.left + strut.right) as u16, self.size.height - (strut.top + strut.bottom) as u16)
+        Rect::new(
+            self.size.x + strut.left as i16,
+            self.size.y + strut.top as i16,
+            self.size.width - (strut.left + strut.right) as u16,
+            self.size.height - (strut.top + strut.bottom) as u16,
+        )
     }
 }
 
 impl WMStrut {
     fn new(aux: &Aux, win: Window) -> Result<Self> {
         let (left, right, top, bottom) = {
-            let wm_struct_partial = get_property(&aux.dpy, false, win, aux.atoms._NET_WM_STRUT_PARTIAL, AtomEnum::CARDINAL, 0, 12).context(crate::code_loc!())?.reply().context(crate::code_loc!())?;
+            let wm_struct_partial = get_property(
+                &aux.dpy,
+                false,
+                win,
+                aux.atoms._NET_WM_STRUT_PARTIAL,
+                AtomEnum::CARDINAL,
+                0,
+                12,
+            )
+            .context(crate::code_loc!())?
+            .reply()
+            .context(crate::code_loc!())?;
             if wm_struct_partial.length != 0 {
                 let vals: Vec<u32> = wm_struct_partial.value32().unwrap().collect();
                 (vals[0], vals[1], vals[2], vals[3])
             } else {
-                let wm_struct = get_property(&aux.dpy, false, win, aux.atoms._NET_WM_STRUT, AtomEnum::CARDINAL, 0, 4).context(crate::code_loc!())?.reply().context(crate::code_loc!())?;
+                let wm_struct = get_property(
+                    &aux.dpy,
+                    false,
+                    win,
+                    aux.atoms._NET_WM_STRUT,
+                    AtomEnum::CARDINAL,
+                    0,
+                    4,
+                )
+                .context(crate::code_loc!())?
+                .reply()
+                .context(crate::code_loc!())?;
                 if wm_struct.length != 0 {
                     let vals: Vec<u32> = wm_struct.value32().unwrap().collect();
                     (vals[0], vals[1], vals[2], vals[3])
@@ -101,7 +154,12 @@ impl WMStrut {
                 }
             }
         };
-        Ok(Self { left, right, top, bottom })
+        Ok(Self {
+            left,
+            right,
+            top,
+            bottom,
+        })
     }
     fn max(mut self, other: &Self) -> Self {
         self.left = self.left.max(other.left);

@@ -1,16 +1,15 @@
 use x11rb::{
-    protocol::{Event, xproto::*, randr::*},
-    NONE, CURRENT_TIME
+    protocol::{randr::*, xproto::*, Event},
+    CURRENT_TIME, NONE,
 };
 
-use log::info;
-use super::{WindowManager, WindowLocation};
+use super::{WindowLocation, WindowManager};
 use crate::config::IGNORED_MASK;
 use anyhow::{Context, Result};
-
+use log::info;
 
 pub(crate) struct EventHandler {
-    drag: DragState
+    drag: DragState,
 }
 
 // for window things
@@ -22,10 +21,10 @@ pub(crate) struct EventHandler {
 impl EventHandler {
     pub fn new() -> Self {
         Self {
-            drag: DragState::default()
+            drag: DragState::default(),
         }
     }
-    
+
     pub fn handle_event(&mut self, wm: &mut WindowManager, e: Event) -> Result<()> {
         match e {
             Event::ButtonPress(ev) => self.handle_button_press(wm, ev),
@@ -39,11 +38,15 @@ impl EventHandler {
             Event::PropertyNotify(ev) => self.handle_property_notify(wm, ev),
             Event::UnmapNotify(ev) => self.handle_unmap_notify(wm, ev),
             Event::RandrScreenChangeNotify(ev) => self.handle_randr_norify(wm, ev),
-            _e => Ok(())//info!("Unhandled Event: {:?}", e)
+            _e => Ok(()), //info!("Unhandled Event: {:?}", e)
         }
     }
 
-    fn handle_randr_norify(&mut self, wm: &mut WindowManager, e: ScreenChangeNotifyEvent) -> Result<()> {
+    fn handle_randr_norify(
+        &mut self,
+        wm: &mut WindowManager,
+        e: ScreenChangeNotifyEvent,
+    ) -> Result<()> {
         info!("Randr event {:?}", e);
         wm.update_monitors()?;
         Ok(())
@@ -52,7 +55,10 @@ impl EventHandler {
     fn handle_enter_notify(&mut self, wm: &mut WindowManager, e: EnterNotifyEvent) -> Result<()> {
         info!("Handling Enter {}({})", e.event, e.child);
         if let Some(WindowLocation::Client(tag, client)) = wm.windows.get(&e.event) {
-            wm.tags.get_mut(tag).unwrap().focus_client(&mut wm.aux, *client)?;
+            wm.tags
+                .get_mut(tag)
+                .unwrap()
+                .focus_client(&mut wm.aux, *client)?;
         }
         Ok(())
     }
@@ -61,7 +67,11 @@ impl EventHandler {
         wm.manage_window(wm.focused_monitor, e.window)?;
         Ok(())
     }
-    fn handle_destroy_notify(&mut self, wm: &mut WindowManager, e: DestroyNotifyEvent) -> Result<()> {
+    fn handle_destroy_notify(
+        &mut self,
+        wm: &mut WindowManager,
+        e: DestroyNotifyEvent,
+    ) -> Result<()> {
         info!("Handling Destroy Notify {}, {}", e.event, e.window);
         wm.unmanage_window(e.window)?;
         Ok(())
@@ -71,29 +81,58 @@ impl EventHandler {
         wm.unmanage_window(e.window)?;
         Ok(())
     }
-    fn handle_property_notify(&mut self, wm: &mut WindowManager, e: PropertyNotifyEvent) -> Result<()> {
+    fn handle_property_notify(
+        &mut self,
+        wm: &mut WindowManager,
+        e: PropertyNotifyEvent,
+    ) -> Result<()> {
         let atom = get_atom_name(&wm.aux.dpy, e.atom).unwrap().reply().unwrap();
-        info!("Handling Property Notify. Property {}, {}", String::from_utf8(atom.name).unwrap(), e.window);
+        info!(
+            "Handling Property Notify. Property {}, {}",
+            String::from_utf8(atom.name).unwrap(),
+            e.window
+        );
         match wm.windows.get(&e.window) {
             Some(WindowLocation::Client(tag, client)) => wm.client_property(*tag, *client, e.atom),
-            Some(WindowLocation::Panel(mon)) => wm.panel_property_changed(e.window, *mon, e.atom)?,
-            _ => ()
+            Some(WindowLocation::Panel(mon)) => {
+                wm.panel_property_changed(e.window, *mon, e.atom)?
+            }
+            _ => (),
         }
         Ok(())
     }
-    fn handle_client_message(&mut self, wm: &mut WindowManager, e: ClientMessageEvent) -> Result<()> {
-        let name = get_atom_name(&wm.aux.dpy, e.type_).unwrap().reply().unwrap();
-        info!("Handling Client Message {}", String::from_utf8(name.name).unwrap());
+    fn handle_client_message(
+        &mut self,
+        wm: &mut WindowManager,
+        e: ClientMessageEvent,
+    ) -> Result<()> {
+        let name = get_atom_name(&wm.aux.dpy, e.type_)
+            .unwrap()
+            .reply()
+            .unwrap();
+        info!(
+            "Handling Client Message {}",
+            String::from_utf8(name.name).unwrap()
+        );
         Ok(())
     }
-    fn handle_configure_request(&mut self, wm: &mut WindowManager, e: ConfigureRequestEvent) -> Result<()> {
+    fn handle_configure_request(
+        &mut self,
+        wm: &mut WindowManager,
+        e: ConfigureRequestEvent,
+    ) -> Result<()> {
         info!("Handling Configure Request");
         if let Some(window) = wm.windows.get(&e.window) {
             match window {
                 WindowLocation::Panel(_) | WindowLocation::DesktopWindow(_) => {
-                    configure_window(&wm.aux.dpy, e.window, &ConfigureWindowAux::from_configure_request(&e)).context(crate::code_loc!())?;
-                },
-                _ => ()
+                    configure_window(
+                        &wm.aux.dpy,
+                        e.window,
+                        &ConfigureWindowAux::from_configure_request(&e),
+                    )
+                    .context(crate::code_loc!())?;
+                }
+                _ => (),
             }
         }
         Ok(())
@@ -106,48 +145,100 @@ impl EventHandler {
             if self.drag.button == 0 {
                 if let Some(WindowLocation::Client(tag, client)) = wm.windows.get(&win) {
                     info!("Raising Client");
-                    wm.tags.get_mut(tag).unwrap().switch_layer(&wm.aux, *client)?;
+                    wm.tags
+                        .get_mut(tag)
+                        .unwrap()
+                        .switch_layer(&wm.aux, *client)?;
                 }
             }
-            allow_events(&wm.aux.dpy, Allow::REPLAY_POINTER, CURRENT_TIME).context(crate::code_loc!())?;
+            allow_events(&wm.aux.dpy, Allow::REPLAY_POINTER, CURRENT_TIME)
+                .context(crate::code_loc!())?;
         } else if self.drag.button == 0 {
             if let Some(WindowLocation::Client(tag, client)) = wm.windows.get(&win) {
                 self.drag.button = match e.detail {
                     1 => 1,
-                    3 => if let Some(rect) = wm.tags.get(tag).unwrap().get_rect(*client) {
-                        let center = (rect.x + (rect.width / 2) as i16, rect.y + (rect.height / 2) as i16);
-                        self.drag.left = center.0 > e.root_x;
-                        self.drag.top = center.1 > e.root_y;
-                        3
-                    } else {
-                        0
-                    },
-                    _ => 0
+                    3 => {
+                        if let Some(rect) = wm.tags.get(tag).unwrap().get_rect(*client) {
+                            let center = (
+                                rect.x + (rect.width / 2) as i16,
+                                rect.y + (rect.height / 2) as i16,
+                            );
+                            self.drag.left = center.0 > e.root_x;
+                            self.drag.top = center.1 > e.root_y;
+                            3
+                        } else {
+                            0
+                        }
+                    }
+                    _ => 0,
                 };
                 if self.drag.button != 0 {
                     info!("Move / Resize ({})", self.drag.button);
                     self.drag.win = *client;
                     self.drag.prev = (e.root_x, e.root_y);
-                    grab_pointer(&wm.aux.dpy, false, wm.root, u32::from(EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION | EventMask::POINTER_MOTION_HINT) as u16, GrabMode::ASYNC, GrabMode::ASYNC, wm.root, NONE, CURRENT_TIME).context(crate::code_loc!())?; 
+                    grab_pointer(
+                        &wm.aux.dpy,
+                        false,
+                        wm.root,
+                        u32::from(
+                            EventMask::BUTTON_RELEASE
+                                | EventMask::POINTER_MOTION
+                                | EventMask::POINTER_MOTION_HINT,
+                        ) as u16,
+                        GrabMode::ASYNC,
+                        GrabMode::ASYNC,
+                        wm.root,
+                        NONE,
+                        CURRENT_TIME,
+                    )
+                    .context(crate::code_loc!())?;
                 }
             }
         }
         Ok(())
     }
-    fn handle_motion_notify(&mut self, wm: &mut WindowManager, _e: MotionNotifyEvent) -> Result<()> {
+    fn handle_motion_notify(
+        &mut self,
+        wm: &mut WindowManager,
+        _e: MotionNotifyEvent,
+    ) -> Result<()> {
         info!("Handling Motion");
         let tag = wm.focused_tag();
-        let tag =wm.tags.get_mut(&tag).unwrap();
-        let poin = query_pointer(&wm.aux.dpy, wm.root).context(crate::code_loc!())?.reply().context(crate::code_loc!())?;
+        let tag = wm.tags.get_mut(&tag).unwrap();
+        let poin = query_pointer(&wm.aux.dpy, wm.root)
+            .context(crate::code_loc!())?
+            .reply()
+            .context(crate::code_loc!())?;
         match self.drag.button {
-            1 => tag.move_client(&wm.aux, self.drag.win, (poin.root_x - self.drag.prev.0, poin.root_y - self.drag.prev.1), &(poin.root_x, poin.root_y))?,
-            3 => tag.resize_client(&wm.aux, self.drag.win, (poin.root_x - self.drag.prev.0, poin.root_y - self.drag.prev.1), self.drag.left, self.drag.top)?,
-            _ => ()
+            1 => tag.move_client(
+                &wm.aux,
+                self.drag.win,
+                (
+                    poin.root_x - self.drag.prev.0,
+                    poin.root_y - self.drag.prev.1,
+                ),
+                &(poin.root_x, poin.root_y),
+            )?,
+            3 => tag.resize_client(
+                &wm.aux,
+                self.drag.win,
+                (
+                    poin.root_x - self.drag.prev.0,
+                    poin.root_y - self.drag.prev.1,
+                ),
+                self.drag.left,
+                self.drag.top,
+            )?,
+            _ => (),
         }
         self.drag.prev = (poin.root_x, poin.root_y);
         Ok(())
     }
-    fn handle_button_release(&mut self, wm: &mut WindowManager, e: ButtonReleaseEvent) -> Result<()> {
+    fn handle_button_release(
+        &mut self,
+        wm: &mut WindowManager,
+        e: ButtonReleaseEvent,
+    ) -> Result<()> {
         info!("Handling Button Release");
         if e.detail == self.drag.button {
             self.drag.button = 0;
@@ -163,5 +254,5 @@ pub(crate) struct DragState {
     win: usize,
     prev: (i16, i16),
     left: bool,
-    top: bool
+    top: bool,
 }

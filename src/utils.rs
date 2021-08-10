@@ -1,13 +1,12 @@
 use x11rb::{
-    connection::Connection,
-    protocol::xproto::*,
-    COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME
+    connection::Connection, protocol::xproto::*, COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT,
+    CURRENT_TIME,
 };
 
 use std::{
     collections::{HashMap, HashSet},
     io::Read,
-    process::{Command, Stdio}
+    process::{Command, Stdio},
 };
 
 pub use stack::{Stack, StackElem};
@@ -15,13 +14,16 @@ pub use stack::{Stack, StackElem};
 pub fn keymap_xmodmap() -> HashMap<String, u8> {
     let output = Command::new("xmodmap").arg("-pke").output().unwrap();
     let string = String::from_utf8(output.stdout).unwrap();
-    string.lines().filter_map(|line| {
-        let mut items = line.split_whitespace();
-        items.next();
-        let keycode: u8 = items.next().unwrap().parse().unwrap();
-        items.next();
-        items.next().map(|n| (n.to_string(), keycode))
-    }).collect::<HashMap<_, _>>()
+    string
+        .lines()
+        .filter_map(|line| {
+            let mut items = line.split_whitespace();
+            items.next();
+            let keycode: u8 = items.next().unwrap().parse().unwrap();
+            items.next();
+            items.next().map(|n| (n.to_string(), keycode))
+        })
+        .collect::<HashMap<_, _>>()
 }
 
 pub fn pop_set<T: Clone + Eq + std::hash::Hash>(set: &mut HashSet<T>) -> Option<T> {
@@ -33,39 +35,42 @@ pub fn pop_set<T: Clone + Eq + std::hash::Hash>(set: &mut HashSet<T>) -> Option<
     }
 }
 
-pub fn three_mut<T>(vec: &mut Vec<T>, idx: (usize, usize, usize)) -> Option<(&mut T, &mut T, &mut T)> {
+pub fn three_mut<T>(
+    vec: &mut Vec<T>,
+    idx: (usize, usize, usize),
+) -> Option<(&mut T, &mut T, &mut T)> {
     match idx {
         (i1, i2, i3) if i1 > i2 && i2 > i3 => {
             let (b, a) = vec.split_at_mut(i1);
             let (c, b) = b.split_at_mut(i2);
             Some((&mut a[0], &mut b[0], &mut c[i3]))
-        },
+        }
         (i1, i2, i3) if i1 > i3 && i3 > i2 => {
             let (b, a) = vec.split_at_mut(i1);
             let (c, b) = b.split_at_mut(i3);
             Some((&mut a[0], &mut c[i2], &mut b[0]))
-        },
+        }
         (i1, i2, i3) if i2 > i1 && i1 > i3 => {
             let (b, a) = vec.split_at_mut(i2);
             let (c, b) = b.split_at_mut(i1);
             Some((&mut b[0], &mut a[0], &mut c[i3]))
-        },
+        }
         (i1, i2, i3) if i2 > i3 && i3 > i1 => {
             let (b, a) = vec.split_at_mut(i2);
             let (c, b) = b.split_at_mut(i3);
             Some((&mut c[i1], &mut a[0], &mut b[0]))
-        },
+        }
         (i1, i2, i3) if i3 > i2 && i2 > i1 => {
             let (b, a) = vec.split_at_mut(i3);
             let (c, b) = b.split_at_mut(i2);
             Some((&mut c[i1], &mut b[0], &mut a[0]))
-        },
+        }
         (i1, i2, i3) if i3 > i1 && i1 > i2 => {
             let (b, a) = vec.split_at_mut(i3);
             let (c, b) = b.split_at_mut(i1);
             Some((&mut b[0], &mut c[i2], &mut a[0]))
-        },
-        _ => None
+        }
+        _ => None,
     }
 }
 
@@ -74,18 +79,30 @@ pub struct Rect {
     pub x: i16,
     pub y: i16,
     pub width: u16,
-    pub height: u16
+    pub height: u16,
 }
 
 impl Rect {
     pub fn new(x: i16, y: i16, width: u16, height: u16) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     pub fn aux(&self, width: u16) -> (ConfigureWindowAux, ConfigureWindowAux) {
         (
-            ConfigureWindowAux::new().x(self.x as i32).y(self.y as i32).width((self.width - width * 2) as u32).height((self.height - width * 2) as u32).border_width(width as u32),
-            ConfigureWindowAux::new().width((self.width - width * 2) as u32).height((self.height - width * 2) as u32),
+            ConfigureWindowAux::new()
+                .x(self.x as i32)
+                .y(self.y as i32)
+                .width((self.width - width * 2) as u32)
+                .height((self.height - width * 2) as u32)
+                .border_width(width as u32),
+            ConfigureWindowAux::new()
+                .width((self.width - width * 2) as u32)
+                .height((self.height - width * 2) as u32),
         )
     }
 
@@ -97,7 +114,10 @@ impl Rect {
     }
 
     pub fn contains(&self, point: &(i16, i16)) -> bool {
-        point.0 > self.x && point.0 < self.x + self.width as i16 && point.1 > self.y && point.1 < self.y + self.height as i16 
+        point.0 > self.x
+            && point.0 < self.x + self.width as i16
+            && point.1 > self.y
+            && point.1 < self.y + self.height as i16
     }
 
     pub fn split(&self, split: f32, vert: bool, rect1: &mut Rect, rect2: &mut Rect, gap: u16) {
@@ -133,13 +153,17 @@ pub mod stack {
         next: Option<usize>,
         prev: Option<usize>,
     }
-    
+
     impl<T> StackElem<T> {
         fn new(item: T) -> Self {
-            Self { item, next: None, prev: None }
+            Self {
+                item,
+                next: None,
+                prev: None,
+            }
         }
     }
-    
+
     #[derive(Default)]
     pub struct Stack<T> {
         items: Vec<StackElem<T>>,
@@ -147,16 +171,16 @@ pub mod stack {
         head: Option<usize>,
         tail: Option<usize>,
     }
-    
+
     impl<T> Stack<T> {
         pub fn front(&self) -> Option<&T> {
             self.head.map(|x| &self.items[x].item)
         }
-    
+
         pub fn back(&self) -> Option<&T> {
             self.tail.map(|x| &self.items[x].item)
         }
-    
+
         pub fn push_front(&mut self, item: T) -> usize {
             let idx = if let Some(idx) = self.free.pop() {
                 self.items[idx].item = item;
@@ -166,16 +190,16 @@ pub mod stack {
                 self.items.len() - 1
             };
             self.items[idx].next = self.head;
-    
+
             match self.head {
                 None => self.tail = Some(idx),
-                Some(head_idx) => self.items[head_idx].prev = Some(idx)
+                Some(head_idx) => self.items[head_idx].prev = Some(idx),
             }
-    
+
             self.head = Some(idx);
             idx
         }
-    
+
         pub fn push_back(&mut self, item: T) -> usize {
             let idx = if let Some(idx) = self.free.pop() {
                 self.items[idx].item = item;
@@ -185,26 +209,25 @@ pub mod stack {
                 self.items.len() - 1
             };
             self.items[idx].prev = self.tail;
-    
+
             match self.tail {
                 None => self.head = Some(idx),
-                Some(tail_idx) => self.items[tail_idx].next = Some(idx)
+                Some(tail_idx) => self.items[tail_idx].next = Some(idx),
             }
-    
+
             self.tail = Some(idx);
             idx
         }
-    
+
         pub fn remove_node(&mut self, idx: usize) {
             match self.items[idx].prev {
                 Some(prev_idx) => self.items[prev_idx].next = self.items[idx].next,
-                None => self.head = self.items[idx].next
+                None => self.head = self.items[idx].next,
             }
             match self.items[idx].next {
                 Some(next_idx) => self.items[next_idx].prev = self.items[idx].prev,
-                None => self.tail = self.items[idx].prev
+                None => self.tail = self.items[idx].prev,
             }
         }
     }
 }
-

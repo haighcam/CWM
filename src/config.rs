@@ -1,10 +1,10 @@
-use x11rb::protocol::xproto::*;
 use super::utils::keymap_xmodmap;
-use serde::{Serialize, Deserialize};
 use crate::tag::StackLayer;
+use serde::{Deserialize, Serialize};
+use x11rb::protocol::xproto::*;
 
 pub const IGNORED_MODS: [u16; 2] = [0, (1 << 1)]; //normal mask, ignore caplock
-pub const IGNORED_MASK: u16 = !IGNORED_MODS[1]; 
+pub const IGNORED_MASK: u16 = !IGNORED_MODS[1];
 
 pub struct Theme {
     pub border_width: u16,

@@ -1,18 +1,17 @@
+use std::collections::{HashMap, HashSet};
 use x11rb::{
+    atom_manager,
     connection::Connection,
-    protocol::{xproto::*, randr::*},
+    protocol::{randr::*, xproto::*},
     rust_connection::RustConnection,
-    atom_manager, NONE
-};
-use std::{
-    collections::{HashMap, HashSet},
+    NONE,
 };
 
 use anyhow::{Context, Result};
 
 use log::info;
-mod utils;
 mod config;
+mod utils;
 use config::IGNORED_MODS;
 mod monitor;
 use monitor::Monitor;
@@ -49,7 +48,7 @@ enum WindowLocation {
     Client(Atom, usize),
     Panel(Atom),
     DesktopWindow(Atom),
-    _Unmanaged
+    _Unmanaged,
 }
 
 pub struct WindowManager {
@@ -63,7 +62,7 @@ pub struct WindowManager {
     focused_monitor: Atom,
     prev_monitor: Atom,
     windows: HashMap<Window, WindowLocation>,
-    running: bool
+    running: bool,
 }
 
 impl WindowManager {
@@ -74,7 +73,7 @@ impl WindowManager {
                 WindowLocation::Client(tag, client) => self.unmanage_client(tag, client)?,
                 WindowLocation::DesktopWindow(mon) => self.desktop_window_unregister(mon, win),
                 WindowLocation::Panel(mon) => self.panel_unregister(mon, win)?,
-                _ => ()
+                _ => (),
             }
         }
         Ok(())
@@ -84,14 +83,47 @@ impl WindowManager {
         let (dpy, pref_screen) = RustConnection::connect(None).unwrap();
         let root = dpy.setup().roots[pref_screen].root;
         let monitors_cookie = get_monitors(&dpy, root, true).context(crate::code_loc!())?;
-        change_window_attributes(&dpy, root, &ChangeWindowAttributesAux::new().event_mask(EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY | EventMask::STRUCTURE_NOTIFY)).context(crate::code_loc!())?;
+        change_window_attributes(
+            &dpy,
+            root,
+            &ChangeWindowAttributesAux::new().event_mask(
+                EventMask::SUBSTRUCTURE_REDIRECT
+                    | EventMask::SUBSTRUCTURE_NOTIFY
+                    | EventMask::STRUCTURE_NOTIFY,
+            ),
+        )
+        .context(crate::code_loc!())?;
         ungrab_key(&dpy, 0, root, ModMask::ANY).context(crate::code_loc!())?;
         ungrab_button(&dpy, ButtonIndex::ANY, root, ModMask::ANY).context(crate::code_loc!())?;
         let event_mask: u16 = u32::from(EventMask::BUTTON_PRESS) as u16;
         for &_m in &IGNORED_MODS {
-            grab_button(&dpy, false, root, event_mask, GrabMode::ASYNC, GrabMode::ASYNC, root, NONE, ButtonIndex::M3, u16::from(ModMask::M1) | _m).context(crate::code_loc!())?;
+            grab_button(
+                &dpy,
+                false,
+                root,
+                event_mask,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+                root,
+                NONE,
+                ButtonIndex::M3,
+                u16::from(ModMask::M1) | _m,
+            )
+            .context(crate::code_loc!())?;
         }
-        grab_button(&dpy, false, root, event_mask, GrabMode::SYNC, GrabMode::ASYNC, root, NONE, ButtonIndex::M1, u16::from(ModMask::ANY)).context(crate::code_loc!())?;
+        grab_button(
+            &dpy,
+            false,
+            root,
+            event_mask,
+            GrabMode::SYNC,
+            GrabMode::ASYNC,
+            root,
+            NONE,
+            ButtonIndex::M1,
+            u16::from(ModMask::ANY),
+        )
+        .context(crate::code_loc!())?;
         dpy.flush().context(crate::code_loc!())?;
         let monitors = monitors_cookie.reply().context(crate::code_loc!())?;
         select_input(&dpy, root, NotifyMask::SCREEN_CHANGE).context(crate::code_loc!())?;
@@ -106,7 +138,7 @@ impl WindowManager {
             focused_monitor: 0,
             prev_monitor: 0,
             windows: HashMap::new(),
-            running: true
+            running: true,
         };
 
         for tag in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"] {

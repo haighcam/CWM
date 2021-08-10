@@ -1,17 +1,17 @@
-use crate::connections::{Stream, CwmResponse, TagState};
-use std::cell::RefCell;
-use std::process::{Command, Stdio};
-use log::info;
-use std::collections::HashMap;
 use super::Tag;
+use crate::connections::{CwmResponse, Stream, TagState};
+use log::info;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::env::var;
+use std::process::{Command, Stdio};
 
 pub struct Hooks {
     monitor_focused: HashMap<u32, (Vec<RefCell<Stream>>, Option<String>)>,
     pub monitor_tags: (Vec<RefCell<Stream>>, Vec<TagState>, u32),
     script_config: Option<String>,
     script_mon_open: Option<String>,
-    script_mon_close: Option<String>
+    script_mon_close: Option<String>,
 }
 
 impl Hooks {
@@ -44,21 +44,37 @@ impl Hooks {
 
     pub fn config(&self) {
         if let Some(script) = &self.script_config {
-            Command::new(script).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+            Command::new(script)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
         }
     }
 
     pub fn mon_open(&mut self, mon: u32, name: &str) {
         self.monitor_focused.insert(mon, (Vec::new(), None));
         if let Some(script) = &self.script_mon_open {
-            Command::new(script).arg(mon.to_string()).arg(name).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+            Command::new(script)
+                .arg(mon.to_string())
+                .arg(name)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
         }
     }
 
     pub fn mon_close(&mut self, mon: u32, name: &str) {
         self.monitor_focused.remove(&mon);
         if let Some(script) = &self.script_mon_close {
-            Command::new(script).arg(mon.to_string()).arg(name).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+            Command::new(script)
+                .arg(mon.to_string())
+                .arg(name)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
         }
     }
 
@@ -83,7 +99,10 @@ impl Hooks {
     }
 
     pub fn add_monitor_tag(&mut self, mut stream: Stream) {
-        if stream.send(&CwmResponse::TagState(self.monitor_tags.1.clone(), self.monitor_tags.2)) {
+        if stream.send(&CwmResponse::TagState(
+            self.monitor_tags.1.clone(),
+            self.monitor_tags.2,
+        )) {
             self.monitor_tags.0.push(RefCell::new(stream))
         }
     }
@@ -100,9 +119,16 @@ impl Hooks {
         }
         let mut changed = val_changed(&mut self.monitor_tags.2, focused_mon);
         if self.monitor_tags.1.len() < tags.len() {
-            self.monitor_tags.1.extend(vec![TagState::default(); tags.len() - self.monitor_tags.1.len()])
+            self.monitor_tags.1.extend(vec![
+                TagState::default();
+                tags.len() - self.monitor_tags.1.len()
+            ])
         }
-        for (tag, state) in order.iter().map(|id| tags.get(id).unwrap()).zip(self.monitor_tags.1.iter_mut()) {
+        for (tag, state) in order
+            .iter()
+            .map(|id| tags.get(id).unwrap())
+            .zip(self.monitor_tags.1.iter_mut())
+        {
             changed |= val_changed(&mut state.name, tag.name.clone());
             changed |= val_changed(&mut state.focused, tag.monitor);
             changed |= val_changed(&mut state.urgent, tag.urgent());
@@ -110,7 +136,9 @@ impl Hooks {
         }
         if changed {
             let message = CwmResponse::TagState(self.monitor_tags.1.clone(), self.monitor_tags.2);
-            self.monitor_tags.0.retain(|hook| hook.borrow_mut().send(&message));
+            self.monitor_tags
+                .0
+                .retain(|hook| hook.borrow_mut().send(&message));
         }
     }
 }

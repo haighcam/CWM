@@ -1,11 +1,10 @@
-use x11rb::protocol::{xproto::*, randr::*};
-use std::collections::HashMap;
-use crate::utils::{Rect, pop_set};
+use super::{tag::ClientArgs, WindowLocation, WindowManager};
 use crate::connections::Aux;
-use super::{WindowManager, WindowLocation, tag::ClientArgs};
+use crate::utils::{pop_set, Rect};
 use anyhow::Result;
 use log::info;
-
+use std::collections::HashMap;
+use x11rb::protocol::{randr::*, xproto::*};
 
 mod desktop_window;
 mod panel;
@@ -20,21 +19,23 @@ pub struct Monitor {
     pub prev_tag: Atom,
     panels: HashMap<Window, Panel>,
     desktop_windows: HashMap<Window, DesktopWindow>,
-    pub size: Rect
+    pub size: Rect,
 }
 
 #[derive(Debug)]
 pub(crate) enum ProcessWindow {
     Client(ClientArgs),
     Panel,
-    Desktop
+    Desktop,
 }
 
 impl ProcessWindow {
     fn process_type(&mut self, aux: &Aux, window_type: Atom) {
         match self {
             Self::Client(args) => {
-                if window_type == aux.atoms._NET_WM_WINDOW_TYPE_TOOLBAR || window_type == aux.atoms._NET_WM_WINDOW_TYPE_UTILITY {
+                if window_type == aux.atoms._NET_WM_WINDOW_TYPE_TOOLBAR
+                    || window_type == aux.atoms._NET_WM_WINDOW_TYPE_UTILITY
+                {
                     args.focus = false;
                 } else if window_type == aux.atoms._NET_WM_WINDOW_TYPE_DIALOG {
                     args.flags.floating = true;
@@ -46,20 +47,29 @@ impl ProcessWindow {
                 } else if window_type == aux.atoms._NET_WM_WINDOW_TYPE_NOTIFICATION {
                     args.managed = false;
                 }
-            },
+            }
             Self::Desktop => {
                 if window_type == aux.atoms._NET_WM_WINDOW_TYPE_DOCK {
                     *self = Self::Panel;
                 }
-            },
-            Self::Panel => ()
+            }
+            Self::Panel => (),
         }
     }
 }
 
 impl WindowManager {
     pub fn manage_window(&mut self, mon: Atom, win: Window) -> Result<()> {
-        let type_cookie = get_property(&self.aux.dpy, false, win, self.aux.atoms._NET_WM_WINDOW_TYPE, AtomEnum::ATOM, 0, 2048).unwrap();
+        let type_cookie = get_property(
+            &self.aux.dpy,
+            false,
+            win,
+            self.aux.atoms._NET_WM_WINDOW_TYPE,
+            AtomEnum::ATOM,
+            0,
+            2048,
+        )
+        .unwrap();
         let mut args = ProcessWindow::Client(ClientArgs::new(&self.aux));
         if let Ok(states) = type_cookie.reply() {
             if let Some(states) = states.value32() {
@@ -73,9 +83,9 @@ impl WindowManager {
             ProcessWindow::Client(mut args) => {
                 self.process_args(win, &mut args)?;
                 self.manage_client(win, args)?;
-            },
+            }
             ProcessWindow::Desktop => self.desktop_window_register(mon, win)?,
-            ProcessWindow::Panel => self.panel_register(mon, win)?
+            ProcessWindow::Panel => self.panel_register(mon, win)?,
         }
         Ok(())
     }
@@ -94,7 +104,9 @@ impl WindowManager {
             desktop_windows: HashMap::new(),
         };
         info!(" monitor: {:?}", monitor);
-        let tag =  tag.or_else(|| pop_set(&mut self.free_tags)).unwrap_or_else(|| self.temp_tag());
+        let tag = tag
+            .or_else(|| pop_set(&mut self.free_tags))
+            .unwrap_or_else(|| self.temp_tag());
         self.monitors.insert(id, monitor);
         self.focused_monitor = id;
         self.set_monitor_tag(id, tag)?;
@@ -107,7 +119,7 @@ impl WindowManager {
     pub fn set_monitor_tag(&mut self, mon: Atom, tag: Atom) -> Result<()> {
         let old_tag = self.monitors.get(&mon).unwrap().focused_tag;
         if old_tag == tag {
-            return Ok(())
+            return Ok(());
         }
         if let Some(tag) = self.tags.get_mut(&old_tag) {
             self.free_tags.insert(old_tag);
@@ -121,8 +133,13 @@ impl WindowManager {
         } else {
             self.free_tags.remove(&tag);
         }
-        self.tags.get_mut(&tag).unwrap().set_monitor(&mut self.aux, self.monitors.get_mut(&mon).unwrap())?;
-        self.aux.hooks.tag_update(&self.tags, &self.tag_order, self.focused_monitor);
+        self.tags
+            .get_mut(&tag)
+            .unwrap()
+            .set_monitor(&mut self.aux, self.monitors.get_mut(&mon).unwrap())?;
+        self.aux
+            .hooks
+            .tag_update(&self.tags, &self.tag_order, self.focused_monitor);
         Ok(())
     }
 
@@ -133,7 +150,10 @@ impl WindowManager {
     pub fn update_monitor(&mut self, info: MonitorInfo) -> Result<()> {
         let mon = self.monitors.get_mut(&info.name).unwrap();
         mon.size = Rect::new(info.x, info.y, info.width, info.height);
-        self.tags.get_mut(&mon.focused_tag).unwrap().set_tiling_size(&self.aux, mon.free_rect())
+        self.tags
+            .get_mut(&mon.focused_tag)
+            .unwrap()
+            .set_tiling_size(&self.aux, mon.free_rect())
     }
 
     pub fn update_monitors(&mut self) -> Result<()> {

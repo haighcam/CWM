@@ -1,20 +1,27 @@
-use x11rb::protocol::xproto::*;
-use super::{WindowManager, WindowLocation};
+use super::{WindowLocation, WindowManager};
 use anyhow::{Context, Result};
-
+use x11rb::protocol::xproto::*;
 
 #[derive(Debug)]
-pub struct DesktopWindow { }
+pub struct DesktopWindow {}
 
 impl WindowManager {
     pub fn desktop_window_register(&mut self, mon: Atom, win: Window) -> Result<()> {
-        self.monitors.get_mut(&mon).unwrap().desktop_windows.insert(win, DesktopWindow {});
+        self.monitors
+            .get_mut(&mon)
+            .unwrap()
+            .desktop_windows
+            .insert(win, DesktopWindow {});
         map_window(&self.aux.dpy, win).context(crate::code_loc!())?;
         self.windows.insert(win, WindowLocation::DesktopWindow(mon));
         Ok(())
     }
 
     pub fn desktop_window_unregister(&mut self, mon: Atom, win: Window) {
-        self.monitors.get_mut(&mon).unwrap().desktop_windows.remove(&win);
+        self.monitors
+            .get_mut(&mon)
+            .unwrap()
+            .desktop_windows
+            .remove(&win);
     }
 }

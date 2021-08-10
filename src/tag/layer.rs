@@ -1,19 +1,19 @@
-use x11rb::protocol::xproto::*;
+use super::Tag;
 use crate::utils::Stack;
 use crate::Aux;
-use super::Tag;
 use anyhow::{Context, Result};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use x11rb::protocol::xproto::*;
 pub enum Layer {
     Single(Option<usize>),
-    Multi(Stack<usize>)
+    Multi(Stack<usize>),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum StackLayer {
     Below,
     Normal,
-    Above
+    Above,
 }
 
 impl Layer {
@@ -29,28 +29,28 @@ impl Layer {
     fn front(&self) -> Option<usize> {
         match self {
             Layer::Single(layer) => *layer,
-            Layer::Multi(layer) => layer.front().cloned()
+            Layer::Multi(layer) => layer.front().cloned(),
         }
     }
 
     fn push_front(&mut self, client: usize) -> (usize, Option<usize>) {
         match self {
             Layer::Single(layer) => (0, layer.replace(client)),
-            Layer::Multi(layer) => (layer.push_front(client), None)
+            Layer::Multi(layer) => (layer.push_front(client), None),
         }
     }
 
     fn push_back(&mut self, client: usize) -> (usize, Option<usize>) {
         match self {
             Layer::Single(layer) => (0, layer.replace(client)),
-            Layer::Multi(layer) => (layer.push_back(client), None)
+            Layer::Multi(layer) => (layer.push_back(client), None),
         }
     }
 
     pub fn remove(&mut self, layer_pos: usize) {
         match self {
             Layer::Single(layer) => *layer = None,
-            Layer::Multi(layer) => layer.remove_node(layer_pos)
+            Layer::Multi(layer) => layer.remove_node(layer_pos),
         }
     }
 }
@@ -60,20 +60,23 @@ impl StackLayer {
         match self {
             StackLayer::Below => 0,
             StackLayer::Normal => Layer::SUBCOUNT,
-            StackLayer::Above => Layer::SUBCOUNT * 2
+            StackLayer::Above => Layer::SUBCOUNT * 2,
         }
     }
-}   
+}
 
 impl Tag {
     pub fn switch_layer(&mut self, aux: &Aux, idx: usize) -> Result<()> {
         let client = &mut self.clients[idx];
         let (prev_layer, layer_pos) = client.layer_pos;
         self.layers[prev_layer].remove(layer_pos);
-        match (prev_layer % Layer::COUNT == Layer::TILING, client.flags.get_layer() % Layer::COUNT == Layer::TILING) {
+        match (
+            prev_layer % Layer::COUNT == Layer::TILING,
+            client.flags.get_layer() % Layer::COUNT == Layer::TILING,
+        ) {
             (false, true) => self.set_absent(aux, idx, false)?,
             (true, false) => self.set_absent(aux, idx, true)?,
-            _ => ()
+            _ => (),
         }
 
         self.set_layer(aux, idx, true)
@@ -89,9 +92,14 @@ impl Tag {
         };
         client.layer_pos = (layer, layer_pos);
         let client = &self.clients[idx];
-        let (mut aux1, aux2) = self.get_rect(idx).unwrap().aux(if client.flags.fullscreen {0} else {client.border_width});
-        aux1 = if let Some(sibling) = self.get_layer_bound(layer + if focus {1} else {0}) {
-            aux1.sibling(self.clients[sibling].frame).stack_mode(StackMode::BELOW)
+        let (mut aux1, aux2) = self.get_rect(idx).unwrap().aux(if client.flags.fullscreen {
+            0
+        } else {
+            client.border_width
+        });
+        aux1 = if let Some(sibling) = self.get_layer_bound(layer + if focus { 1 } else { 0 }) {
+            aux1.sibling(self.clients[sibling].frame)
+                .stack_mode(StackMode::BELOW)
         } else {
             aux1.stack_mode(StackMode::ABOVE)
         };
@@ -111,7 +119,7 @@ impl Tag {
         if layer < Layer::SUBCOUNT * Layer::COUNT {
             for layer in layer..(Layer::SUBCOUNT * Layer::COUNT) {
                 if let Some(window) = self.layers[layer].front() {
-                    return Some(window)
+                    return Some(window);
                 }
             }
             None

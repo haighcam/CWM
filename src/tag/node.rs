@@ -1,24 +1,22 @@
-
-use crate::utils::{Rect, three_mut};
-use crate::Aux;
-use serde::{Serialize, Deserialize};
 use super::Tag;
+use crate::utils::{three_mut, Rect};
+use crate::Aux;
 use anyhow::Result;
 use log::info;
-
+use serde::{Deserialize, Serialize};
 
 #[derive(PartialEq, Serialize, Deserialize, Debug)]
 pub enum Side {
     Left,
     Right,
     Top,
-    Bottom
+    Bottom,
 }
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Split {
     Horizontal,
-    Vertical
+    Vertical,
 }
 
 #[derive(Clone, Debug)]
@@ -44,14 +42,14 @@ pub struct LeafInfo {
     floating: Rect,
     min_size: (u16, u16),
     max_size: (u16, u16),
-    client: usize
+    client: usize,
 }
 
 #[derive(Clone, Debug)]
 pub enum NodeContents {
     Node(NodeInfo),
     Leaf(LeafInfo),
-    Empty
+    Empty,
 }
 
 impl NodeContents {
@@ -60,11 +58,21 @@ impl NodeContents {
     }
 
     pub fn leaf(client: usize, min_size: (u16, u16), max_size: (u16, u16), floating: Rect) -> Self {
-        Self::Leaf(LeafInfo { client, min_size, max_size, floating })
+        Self::Leaf(LeafInfo {
+            client,
+            min_size,
+            max_size,
+            floating,
+        })
     }
 
     pub fn node(split: Split, ratio: f32, first_child: usize, second_child: usize) -> Self {
-        Self::Node(NodeInfo { split, ratio, first_child, second_child })
+        Self::Node(NodeInfo {
+            split,
+            ratio,
+            first_child,
+            second_child,
+        })
     }
 }
 
@@ -73,7 +81,7 @@ pub struct Node {
     pub parent: Option<(usize, bool)>,
     pub absent: bool,
     pub rect: Rect,
-    pub info: NodeContents
+    pub info: NodeContents,
 }
 
 impl Split {
@@ -91,7 +99,7 @@ impl Tag {
             if !client.flags.floating {
                 Some(node.rect.clone())
             } else if let NodeContents::Leaf(leaf) = &node.info {
-                    Some(leaf.floating.clone())
+                Some(leaf.floating.clone())
             } else {
                 None
             }
@@ -104,24 +112,31 @@ impl Tag {
         } else {
             None
         } {
-            info!("{} {} {}",node, _child1, _child2);
-            let (node, child1, child2) = three_mut(&mut self.nodes, (node, _child1, _child2)).unwrap();
+            info!("{} {} {}", node, _child1, _child2);
+            let (node, child1, child2) =
+                three_mut(&mut self.nodes, (node, _child1, _child2)).unwrap();
             if let NodeContents::Node(info) = &node.info {
                 match (child1.absent, child2.absent) {
                     (true, false) => {
                         child2.rect.copy(&node.rect);
                         to_process.push(_child2);
-                    },
+                    }
                     (false, true) => {
                         child1.rect.copy(&node.rect);
-                        to_process.push(_child1);    
-                    },
+                        to_process.push(_child1);
+                    }
                     (false, false) => {
-                        node.rect.split(info.ratio, info.split == Split::Vertical, &mut child1.rect, &mut child2.rect, aux.theme.gap);
+                        node.rect.split(
+                            info.ratio,
+                            info.split == Split::Vertical,
+                            &mut child1.rect,
+                            &mut child2.rect,
+                            aux.theme.gap,
+                        );
                         to_process.push(_child2);
                         to_process.push(_child1);
-                    },
-                    _ => ()
+                    }
+                    _ => (),
                 }
             }
         }
@@ -137,7 +152,15 @@ impl Tag {
         }
     }
 
-    pub fn split_leaf(&mut self, aux: &Aux, leaf_idx: usize, split: Option<Split>, absent: bool, idx: usize, info: NodeContents) -> Result<()> {
+    pub fn split_leaf(
+        &mut self,
+        aux: &Aux,
+        leaf_idx: usize,
+        split: Option<Split>,
+        absent: bool,
+        idx: usize,
+        info: NodeContents,
+    ) -> Result<()> {
         info!("{:?}", self.nodes);
         let rect = self.nodes[leaf_idx].rect.clone();
         let split = split.unwrap_or_else(|| {
@@ -150,17 +173,21 @@ impl Tag {
 
         let (node1, node2, leaf_absent) = {
             let leaf = &self.nodes[leaf_idx];
-            (Node {
-                parent: Some((leaf_idx, true)),
-                rect: Rect::default(),
-                absent: leaf.absent,
-                info: leaf.info.clone()
-            }, Node {
-                parent: Some((leaf_idx, false)),
-                rect: Rect::default(),
-                absent,
-                info
-            }, leaf.absent)
+            (
+                Node {
+                    parent: Some((leaf_idx, true)),
+                    rect: Rect::default(),
+                    absent: leaf.absent,
+                    info: leaf.info.clone(),
+                },
+                Node {
+                    parent: Some((leaf_idx, false)),
+                    rect: Rect::default(),
+                    absent,
+                    info,
+                },
+                leaf.absent,
+            )
         };
         let first_child = self.add_node(node1);
         let second_child = self.add_node(node2);
@@ -174,7 +201,7 @@ impl Tag {
             split,
             ratio: 0.5,
             first_child,
-            second_child
+            second_child,
         });
         self.clients[idx].node = second_child;
         // recompute child sizes of node
@@ -197,7 +224,10 @@ impl Tag {
             parent = {
                 if let Some(absent) = {
                     if let NodeContents::Node(node) = &self.nodes[prev_parent].info {
-                        Some(self.nodes[node.first_child].absent && self.nodes[node.second_child].absent)
+                        Some(
+                            self.nodes[node.first_child].absent
+                                && self.nodes[node.second_child].absent,
+                        )
                     } else {
                         None
                     }
@@ -220,10 +250,12 @@ impl Tag {
             let node = &self.nodes[node_];
             match &node.info {
                 NodeContents::Node(_) => self.resize_node(aux, node_, &mut q),
-                NodeContents::Leaf(leaf) => if !node.absent {
-                    self.apply_pos_size(aux, leaf.client, &node.rect, true)?
-                },
-                _ => ()
+                NodeContents::Leaf(leaf) => {
+                    if !node.absent {
+                        self.apply_pos_size(aux, leaf.client, &node.rect, true)?
+                    }
+                }
+                _ => (),
             }
         }
         Ok(())
@@ -237,15 +269,61 @@ impl Tag {
             _parent = {
                 let parent = &self.nodes[_parent.unwrap()];
                 match (parent, &split_dir) {
-                    (Node { info: NodeContents::Node(NodeInfo{split: Split::Vertical, ..}), rect, .. }, Side::Left)
-                        if rect.x < node_rect.x => break,
-                    (Node { info: NodeContents::Node(NodeInfo{split: Split::Vertical, ..}), rect, .. }, Side::Right) 
-                        if (rect.x + rect.width as i16) > (node_rect.x + node_rect.width as i16) => break,
-                    (Node { info: NodeContents::Node(NodeInfo{split: Split::Horizontal, ..}), rect, .. }, Side::Top) 
-                        if rect.y < node_rect.y => break,
-                    (Node { info: NodeContents::Node(NodeInfo{split: Split::Horizontal, ..}), rect, .. }, Side::Bottom) 
-                        if (rect.y + rect.height as i16) > (node_rect.y + node_rect.height as i16) => break,
-                    _ => ()
+                    (
+                        Node {
+                            info:
+                                NodeContents::Node(NodeInfo {
+                                    split: Split::Vertical,
+                                    ..
+                                }),
+                            rect,
+                            ..
+                        },
+                        Side::Left,
+                    ) if rect.x < node_rect.x => break,
+                    (
+                        Node {
+                            info:
+                                NodeContents::Node(NodeInfo {
+                                    split: Split::Vertical,
+                                    ..
+                                }),
+                            rect,
+                            ..
+                        },
+                        Side::Right,
+                    ) if (rect.x + rect.width as i16) > (node_rect.x + node_rect.width as i16) => {
+                        break
+                    }
+                    (
+                        Node {
+                            info:
+                                NodeContents::Node(NodeInfo {
+                                    split: Split::Horizontal,
+                                    ..
+                                }),
+                            rect,
+                            ..
+                        },
+                        Side::Top,
+                    ) if rect.y < node_rect.y => break,
+                    (
+                        Node {
+                            info:
+                                NodeContents::Node(NodeInfo {
+                                    split: Split::Horizontal,
+                                    ..
+                                }),
+                            rect,
+                            ..
+                        },
+                        Side::Bottom,
+                    ) if (rect.y + rect.height as i16)
+                        > (node_rect.y + node_rect.height as i16) =>
+                    {
+                        break
+                    }
+                    _ => (),
                 }
                 parent.parent.map(|x| x.0)
             };
@@ -271,14 +349,20 @@ impl Tag {
                 NodeContents::Node(node) => {
                     check_node(self, node.first_child, &mut q, pos);
                     check_node(self, node.second_child, &mut q, pos);
-                },
-                _ => ()
+                }
+                _ => (),
             }
         }
         None
     }
 
-    pub fn move_client(&mut self, aux: &Aux, client_: usize, delta: (i16, i16), pos: &(i16, i16)) -> Result<()> {
+    pub fn move_client(
+        &mut self,
+        aux: &Aux,
+        client_: usize,
+        delta: (i16, i16),
+        pos: &(i16, i16),
+    ) -> Result<()> {
         let client = &self.clients[client_];
         if !client.flags.fullscreen {
             if client.flags.floating {
@@ -306,33 +390,70 @@ impl Tag {
         Ok(())
     }
 
-    pub fn resize_client(&mut self, aux: &Aux, client: usize, delta: (i16, i16), left: bool, top: bool) -> Result<()> {
+    pub fn resize_client(
+        &mut self,
+        aux: &Aux,
+        client: usize,
+        delta: (i16, i16),
+        left: bool,
+        top: bool,
+    ) -> Result<()> {
         let (fullscreen, floating, node) = {
             let client = &self.clients[client];
-            (client.flags.fullscreen, client.flags.fullscreen, client.node)
+            (
+                client.flags.fullscreen,
+                client.flags.fullscreen,
+                client.node,
+            )
         };
         if !fullscreen {
             if floating {
                 if let NodeContents::Leaf(leaf) = &mut self.nodes[node].info {
                     if left {
                         leaf.floating.x += delta.0;
-                        leaf.floating.width = leaf.floating.width.overflowing_sub(delta.0 as u16).0.min(leaf.max_size.0).max(leaf.min_size.0);
+                        leaf.floating.width = leaf
+                            .floating
+                            .width
+                            .overflowing_sub(delta.0 as u16)
+                            .0
+                            .min(leaf.max_size.0)
+                            .max(leaf.min_size.0);
                     } else {
-                        leaf.floating.width = leaf.floating.width.overflowing_add(delta.0 as u16).0.min(leaf.max_size.0).max(leaf.min_size.0);
+                        leaf.floating.width = leaf
+                            .floating
+                            .width
+                            .overflowing_add(delta.0 as u16)
+                            .0
+                            .min(leaf.max_size.0)
+                            .max(leaf.min_size.0);
                     }
                     if top {
                         leaf.floating.y += delta.1;
-                        leaf.floating.height = leaf.floating.height.overflowing_sub(delta.1 as u16).0.min(leaf.max_size.1).max(leaf.min_size.1);
+                        leaf.floating.height = leaf
+                            .floating
+                            .height
+                            .overflowing_sub(delta.1 as u16)
+                            .0
+                            .min(leaf.max_size.1)
+                            .max(leaf.min_size.1);
                     } else {
-                        leaf.floating.height = leaf.floating.height.overflowing_add(delta.1 as u16).0.min(leaf.max_size.1).max(leaf.min_size.1);
+                        leaf.floating.height = leaf
+                            .floating
+                            .height
+                            .overflowing_add(delta.1 as u16)
+                            .0
+                            .min(leaf.max_size.1)
+                            .max(leaf.min_size.1);
                     }
                 }
                 if let NodeContents::Leaf(leaf) = &self.nodes[node].info {
                     self.apply_pos_size(aux, client, &leaf.floating, true)?;
                 }
             } else {
-                let (parent_h, depth1) = self.get_split_parent(node, if left {Side::Left} else {Side::Right});
-                let (parent_v, depth2) = self.get_split_parent(node, if top {Side::Top} else {Side::Bottom});
+                let (parent_h, depth1) =
+                    self.get_split_parent(node, if left { Side::Left } else { Side::Right });
+                let (parent_v, depth2) =
+                    self.get_split_parent(node, if top { Side::Top } else { Side::Bottom });
                 let mut q = vec![];
                 if let Some(parent_) = parent_h {
                     let parent = &mut self.nodes[parent_];
@@ -359,10 +480,12 @@ impl Tag {
                     let node = &self.nodes[node_];
                     match &node.info {
                         NodeContents::Node(_) => self.resize_node(aux, node_, &mut q),
-                        NodeContents::Leaf(leaf) => if !node.absent {
-                            self.apply_pos_size(aux, leaf.client, &node.rect, true)?
-                        },
-                        _ => ()  
+                        NodeContents::Leaf(leaf) => {
+                            if !node.absent {
+                                self.apply_pos_size(aux, leaf.client, &node.rect, true)?
+                            }
+                        }
+                        _ => (),
                     }
                 }
             }
@@ -388,8 +511,10 @@ impl Tag {
     pub fn set_tiling_size(&mut self, aux: &Aux, mut tiling_size: Rect) -> Result<()> {
         tiling_size.x += aux.theme.gap as i16 + aux.theme.left_margin;
         tiling_size.y += aux.theme.gap as i16 + aux.theme.top_margin;
-        tiling_size.width -= (aux.theme.gap as i16 * 2 + aux.theme.right_margin + aux.theme.left_margin) as u16;
-        tiling_size.height -= (aux.theme.gap as i16 * 2 + aux.theme.bottom_margin + aux.theme.top_margin) as u16;
+        tiling_size.width -=
+            (aux.theme.gap as i16 * 2 + aux.theme.right_margin + aux.theme.left_margin) as u16;
+        tiling_size.height -=
+            (aux.theme.gap as i16 * 2 + aux.theme.bottom_margin + aux.theme.top_margin) as u16;
         if tiling_size != self.tiling_size {
             self.resize_tiled(aux, 0, Some(&tiling_size))?;
             self.tiling_size = tiling_size;
@@ -407,16 +532,24 @@ impl Tag {
             let node = &self.nodes[node_];
             match &node.info {
                 NodeContents::Node(..) => self.resize_node(aux, node_, &mut q),
-                NodeContents::Leaf(leaf) => if !node.absent {
-                    self.apply_pos_size(aux, leaf.client, &node.rect, true)?
-                },
-                _ => ()
+                NodeContents::Leaf(leaf) => {
+                    if !node.absent {
+                        self.apply_pos_size(aux, leaf.client, &node.rect, true)?
+                    }
+                }
+                _ => (),
             }
         }
         Ok(())
     }
 
-    pub fn resize_all(&mut self, aux: &Aux, node: usize, available: &Rect, new_size: &Rect) -> Result<()> {
+    pub fn resize_all(
+        &mut self,
+        aux: &Aux,
+        node: usize,
+        available: &Rect,
+        new_size: &Rect,
+    ) -> Result<()> {
         self.nodes[node].rect.copy(available);
         let mut q = vec![node];
         while !q.is_empty() {
@@ -424,29 +557,37 @@ impl Tag {
             let node = &self.nodes[node_];
             match &node.info {
                 NodeContents::Node(..) => self.resize_node(aux, node_, &mut q),
-                NodeContents::Leaf(leaf) => if !node.absent {
-                    let leaf_client = leaf.client;
-                    let floating = {
-                        if let NodeContents::Leaf(leaf) =  &mut self.nodes[node_].info {
-                            leaf.floating.x = (leaf.floating.x as f32 / self.tiling_size.width as f32 * new_size.width as f32).round() as _;
-                            leaf.floating.y = (leaf.floating.y as f32 / self.tiling_size.height as f32 * new_size.height as f32).round() as _;
-                            leaf.floating.clone()
+                NodeContents::Leaf(leaf) => {
+                    if !node.absent {
+                        let leaf_client = leaf.client;
+                        let floating = {
+                            if let NodeContents::Leaf(leaf) = &mut self.nodes[node_].info {
+                                leaf.floating.x = (leaf.floating.x as f32
+                                    / self.tiling_size.width as f32
+                                    * new_size.width as f32)
+                                    .round() as _;
+                                leaf.floating.y = (leaf.floating.y as f32
+                                    / self.tiling_size.height as f32
+                                    * new_size.height as f32)
+                                    .round() as _;
+                                leaf.floating.clone()
+                            } else {
+                                Rect::default()
+                            }
+                        };
+                        let node = &self.nodes[node_];
+                        let client = &self.clients[leaf_client];
+                        let (rect, border) = if client.flags.fullscreen {
+                            (new_size, false)
+                        } else if client.flags.floating {
+                            (&floating, true)
                         } else {
-                            Rect::default()
-                        }
-                    };
-                    let node = &self.nodes[node_];
-                    let client = &self.clients[leaf_client];
-                    let (rect, border) = if client.flags.fullscreen {
-                        (new_size, false)
-                    } else if client.flags.floating {
-                        (&floating, true)
-                    } else {
-                        (&node.rect, true)
-                    };
-                    self.apply_pos_size(aux, leaf_client, rect, border)?
-                },
-                _ => ()
+                            (&node.rect, true)
+                        };
+                        self.apply_pos_size(aux, leaf_client, rect, border)?
+                    }
+                }
+                _ => (),
             }
         }
         Ok(())
@@ -464,8 +605,8 @@ impl Tag {
                         self.free_nodes.push(child);
                         let child = &self.nodes[child];
                         Some((child.info.clone(), child.absent))
-                    },
-                    _ => None
+                    }
+                    _ => None,
                 };
                 let parent = &mut self.nodes[parent_];
                 if let Some((info, absent)) = info {
@@ -473,7 +614,7 @@ impl Tag {
                     parent.absent = absent;
                 } else {
                     parent.info = NodeContents::Empty;
-                } 
+                }
                 if let NodeContents::Leaf(leaf) = &parent.info {
                     self.clients[leaf.client].node = parent_;
                 }
@@ -485,13 +626,15 @@ impl Tag {
     }
 
     pub fn print_node(&self, node: usize, depth: usize) {
-        let offset = std::iter::repeat(" ").take(depth).fold(String::new(), |x, y| x + y);
+        let offset = std::iter::repeat(" ")
+            .take(depth)
+            .fold(String::new(), |x, y| x + y);
         match &self.nodes[node].info {
             NodeContents::Node(node) => {
                 println!("{}node:", offset);
-                self.print_node(node.first_child, depth+1);
-                self.print_node(node.second_child, depth+1);
-            },
+                self.print_node(node.first_child, depth + 1);
+                self.print_node(node.second_child, depth + 1);
+            }
             NodeContents::Leaf(_) => {
                 println!("{}leaf", offset);
             }

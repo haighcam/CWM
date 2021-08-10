@@ -1,27 +1,24 @@
-use x11rb::{
-    connection::Connection,
-    protocol::xproto::*,
-    properties::*,
-    x11_utils::Serialize,
-    COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE
-};
-use std::collections::{HashSet, hash_map::Entry};
-use log::info;
-use crate::utils::{Rect, Stack};
-use crate::{Aux, AtomCollection, Hooks};
+use super::{Monitor, WindowManager};
 use crate::config::Theme;
-use super::{WindowManager, Monitor};
+use crate::utils::{Rect, Stack};
+use crate::{AtomCollection, Aux, Hooks};
 use anyhow::{Context, Result};
+use log::info;
+use std::collections::{hash_map::Entry, HashSet};
+use x11rb::{
+    connection::Connection, properties::*, protocol::xproto::*, x11_utils::Serialize,
+    COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE,
+};
 
-mod node;
 mod client;
 mod layer;
-use node::{Node, Split, NodeContents};
+mod node;
 use client::Client;
 use layer::Layer;
+use node::{Node, NodeContents, Split};
 
-pub use layer::StackLayer;
 pub use client::ClientArgs;
+pub use layer::StackLayer;
 pub use node::Side;
 
 pub struct Tag {
@@ -37,7 +34,7 @@ pub struct Tag {
     tiling_size: Rect,
     pub monitor: Option<Atom>,
     urgent: HashSet<usize>,
-    temp: bool
+    temp: bool,
 }
 
 impl Tag {
@@ -59,7 +56,7 @@ impl Tag {
 
     pub fn set_monitor(&mut self, aux: &mut Aux, monitor: &mut Monitor) -> Result<()> {
         if monitor.focused_tag == self.id {
-            return Ok(())
+            return Ok(());
         }
         // resize the windows
         let available = monitor.free_rect();
@@ -69,13 +66,19 @@ impl Tag {
                 self.show_client(aux, id)?;
             }
         }
-        
+
         self.monitor.replace(monitor.id);
         self.size.copy(&monitor.size);
         self.tiling_size = available;
         monitor.prev_tag = monitor.focused_tag;
         monitor.focused_tag = self.id;
-        self.set_active_window(self.focus_stack.front().map(|id| self.clients[*id].name.clone()).unwrap_or(None), &mut aux.hooks);
+        self.set_active_window(
+            self.focus_stack
+                .front()
+                .map(|id| self.clients[*id].name.clone())
+                .unwrap_or(None),
+            &mut aux.hooks,
+        );
         //info!("tag {} monitor set to {}. size: {:?}, available: {:?}, root layout size: {:?}", self.id, monitor.id, self.monitor_size, self.available, self.layout.borrow().rect);
         Ok(())
     }
@@ -102,29 +105,42 @@ impl Default for Tag {
         Tag {
             id: 0,
             name: String::new(),
-            nodes: vec![Node { absent: false, info: NodeContents::empty(), parent: None, rect: Rect::default()}],
+            nodes: vec![Node {
+                absent: false,
+                info: NodeContents::empty(),
+                parent: None,
+                rect: Rect::default(),
+            }],
             clients: Vec::new(),
             free_nodes: Vec::new(),
             free_clients: Vec::new(),
             focus_stack: Stack::default(),
             layers: [
-                Layer::Multi(Stack::default()), Layer::Multi(Stack::default()), Layer::Single(None), 
-                Layer::Multi(Stack::default()), Layer::Multi(Stack::default()), Layer::Single(None), 
-                Layer::Multi(Stack::default()), Layer::Multi(Stack::default()), Layer::Single(None)
+                Layer::Multi(Stack::default()),
+                Layer::Multi(Stack::default()),
+                Layer::Single(None),
+                Layer::Multi(Stack::default()),
+                Layer::Multi(Stack::default()),
+                Layer::Single(None),
+                Layer::Multi(Stack::default()),
+                Layer::Multi(Stack::default()),
+                Layer::Single(None),
             ],
             size: Rect::default(),
             tiling_size: Rect::default(),
             monitor: None,
             urgent: HashSet::new(),
-            temp: false
+            temp: false,
         }
     }
 }
 
-
 impl WindowManager {
     pub fn focused_tag(&self) -> Atom {
-        self.monitors.get(&self.focused_monitor).unwrap().focused_tag
+        self.monitors
+            .get(&self.focused_monitor)
+            .unwrap()
+            .focused_tag
     }
 
     // when the temp tag is removed, swap its id and name with the last temp tag so that they are always in order.
@@ -143,7 +159,9 @@ impl WindowManager {
 
     pub fn add_tag(&mut self, name: impl Into<String>) -> Result<bool> {
         let name = name.into();
-        let id = intern_atom(&self.aux.dpy, false, name.as_ref())?.reply()?.atom;
+        let id = intern_atom(&self.aux.dpy, false, name.as_ref())?
+            .reply()?
+            .atom;
         let tag = Tag {
             id,
             name,
