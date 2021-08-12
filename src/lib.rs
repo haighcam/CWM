@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use x11rb::{
     atom_manager,
@@ -6,8 +7,6 @@ use x11rb::{
     rust_connection::RustConnection,
     NONE,
 };
-
-use anyhow::{Context, Result};
 
 use log::info;
 mod config;
@@ -40,6 +39,8 @@ atom_manager! {
         _NET_WM_STATE_FULLSCREEN,
         _NET_WM_STATE_STICKY,
         WM_STATE,
+        WM_PROTOCOLS,
+        WM_DELETE_WINDOW,
         UTF8_STRING,
     }
 }
@@ -48,11 +49,11 @@ enum WindowLocation {
     Client(Atom, usize),
     Panel(Atom),
     DesktopWindow(Atom),
+    Monitor(Atom),
     _Unmanaged,
 }
 
 pub struct WindowManager {
-    root: Window,
     aux: Aux,
     tags: HashMap<Atom, Tag>,
     free_tags: HashSet<Atom>,
@@ -107,29 +108,42 @@ impl WindowManager {
                 root,
                 NONE,
                 ButtonIndex::M3,
-                u16::from(ModMask::M1) | _m,
+                u16::from(ModMask::M4) | _m,
+            )
+            .context(crate::code_loc!())?;
+            grab_button(
+                &dpy,
+                false,
+                root,
+                event_mask,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+                root,
+                NONE,
+                ButtonIndex::M1,
+                u16::from(ModMask::M4) | _m,
+            )
+            .context(crate::code_loc!())?;
+            grab_button(
+                &dpy,
+                false,
+                root,
+                event_mask,
+                GrabMode::SYNC,
+                GrabMode::ASYNC,
+                root,
+                NONE,
+                ButtonIndex::M1,
+                _m,
             )
             .context(crate::code_loc!())?;
         }
-        grab_button(
-            &dpy,
-            false,
-            root,
-            event_mask,
-            GrabMode::SYNC,
-            GrabMode::ASYNC,
-            root,
-            NONE,
-            ButtonIndex::M1,
-            u16::from(ModMask::ANY),
-        )
-        .context(crate::code_loc!())?;
+
         dpy.flush().context(crate::code_loc!())?;
         let monitors = monitors_cookie.reply().context(crate::code_loc!())?;
         select_input(&dpy, root, NotifyMask::SCREEN_CHANGE).context(crate::code_loc!())?;
         let mut wm = Self {
-            root,
-            aux: Aux::new(dpy)?,
+            aux: Aux::new(dpy, root)?,
             monitors: HashMap::new(),
             tags: HashMap::new(),
             free_tags: HashSet::new(),

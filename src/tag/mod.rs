@@ -1,14 +1,11 @@
-use super::{Monitor, WindowManager};
-use crate::config::Theme;
-use crate::utils::{Rect, Stack};
-use crate::{AtomCollection, Aux, Hooks};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use log::info;
 use std::collections::{hash_map::Entry, HashSet};
-use x11rb::{
-    connection::Connection, properties::*, protocol::xproto::*, x11_utils::Serialize,
-    COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE,
-};
+use x11rb::protocol::xproto::*;
+
+use super::{Monitor, WindowManager};
+use crate::utils::{Rect, Stack};
+use crate::{Aux, Hooks};
 
 mod client;
 mod layer;
@@ -35,6 +32,7 @@ pub struct Tag {
     pub monitor: Option<Atom>,
     urgent: HashSet<usize>,
     temp: bool,
+    bg: Option<Window>,
 }
 
 impl Tag {
@@ -54,22 +52,29 @@ impl Tag {
         &self.clients[client]
     }
 
+    pub fn client_mut(&mut self, client: usize) -> &mut Client {
+        &mut self.clients[client]
+    }
+
     pub fn set_monitor(&mut self, aux: &mut Aux, monitor: &mut Monitor) -> Result<()> {
         if monitor.focused_tag == self.id {
             return Ok(());
         }
         // resize the windows
         let available = monitor.free_rect();
-        self.resize_all(aux, 0, &available, &monitor.size)?;
-        for (id, client) in self.clients.iter().enumerate() {
+        info!("resizing");
+        self.resize_all(aux, &available, &monitor.size)?;
+        info!("showing windows");
+        for client in self.clients.iter() {
             if !client.flags.hidden {
-                self.show_client(aux, id)?;
+                client.show(aux)?;
             }
         }
 
+        info!("done showing windows");
         self.monitor.replace(monitor.id);
+        self.bg.replace(monitor.bg);
         self.size.copy(&monitor.size);
-        self.tiling_size = available;
         monitor.prev_tag = monitor.focused_tag;
         monitor.focused_tag = self.id;
         self.set_active_window(
@@ -85,9 +90,10 @@ impl Tag {
 
     pub fn hide(&mut self, aux: &Aux) -> Result<()> {
         self.monitor.take();
-        for (id, client) in self.clients.iter().enumerate() {
+        self.bg.take();
+        for client in self.clients.iter_mut() {
             if !client.flags.hidden {
-                self.hide_client(aux, id)?;
+                client.hide(aux)?;
             }
         }
         Ok(())
@@ -109,7 +115,7 @@ impl Default for Tag {
                 absent: false,
                 info: NodeContents::empty(),
                 parent: None,
-                rect: Rect::default(),
+                rect: Rect::new(0, 0, 1920, 1080),
             }],
             clients: Vec::new(),
             free_nodes: Vec::new(),
@@ -126,11 +132,12 @@ impl Default for Tag {
                 Layer::Multi(Stack::default()),
                 Layer::Single(None),
             ],
-            size: Rect::default(),
+            size: Rect::new(0, 0, 1920, 1080),
             tiling_size: Rect::default(),
             monitor: None,
             urgent: HashSet::new(),
             temp: false,
+            bg: None,
         }
     }
 }
@@ -169,7 +176,7 @@ impl WindowManager {
         };
         match self.tags.entry(id) {
             Entry::Occupied(..) => Ok(false),
-            Entry::Vacant(mut entry) => {
+            Entry::Vacant(entry) => {
                 entry.insert(tag);
                 self.free_tags.insert(id);
                 self.tag_order.push(id);

@@ -1,9 +1,10 @@
-use super::{super::WindowManager, Monitor, WindowLocation};
-use crate::utils::Rect;
-use crate::Aux;
 use anyhow::{Context, Result};
 use log::info;
 use x11rb::protocol::xproto::*;
+
+use super::Monitor;
+use crate::utils::Rect;
+use crate::{Aux, WindowLocation, WindowManager};
 
 #[derive(Debug)]
 pub struct Panel {
@@ -46,7 +47,14 @@ impl WindowManager {
         // triger a hook
     }
 
-    pub fn panel_register(&mut self, mon: Atom, win: Window) -> Result<()> {
+    pub fn panel_register(&mut self, mut mon: Atom, win: Window) -> Result<()> {
+        let rect: Rect = get_geometry(&self.aux.dpy, win)?.reply()?.into();
+        for new_mon in self.monitors.values() {
+            if new_mon.size.contains_rect(&rect) {
+                mon = new_mon.id;
+                break;
+            }
+        }
         info!("panel registered {} mon: {}", win, mon);
         self.monitors
             .get_mut(&mon)

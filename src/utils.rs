@@ -1,33 +1,10 @@
-use x11rb::{
-    connection::Connection, protocol::xproto::*, COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT,
-    CURRENT_TIME,
-};
-
-use std::{
-    collections::{HashMap, HashSet},
-    io::Read,
-    process::{Command, Stdio},
-};
+use std::collections::HashSet;
+use x11rb::protocol::xproto::*;
 
 pub use stack::{Stack, StackElem};
 
-pub fn keymap_xmodmap() -> HashMap<String, u8> {
-    let output = Command::new("xmodmap").arg("-pke").output().unwrap();
-    let string = String::from_utf8(output.stdout).unwrap();
-    string
-        .lines()
-        .filter_map(|line| {
-            let mut items = line.split_whitespace();
-            items.next();
-            let keycode: u8 = items.next().unwrap().parse().unwrap();
-            items.next();
-            items.next().map(|n| (n.to_string(), keycode))
-        })
-        .collect::<HashMap<_, _>>()
-}
-
-pub fn pop_set<T: Clone + Eq + std::hash::Hash>(set: &mut HashSet<T>) -> Option<T> {
-    if let Some(item) = set.iter().next().cloned() {
+pub fn pop_set<T: Clone + Eq + std::hash::Hash>(set: &mut HashSet<T>, order: &[T]) -> Option<T> {
+    if let Some(item) = order.iter().find(|x| set.contains(x)).cloned() {
         set.remove(&item);
         Some(item)
     } else {
@@ -92,18 +69,13 @@ impl Rect {
         }
     }
 
-    pub fn aux(&self, width: u16) -> (ConfigureWindowAux, ConfigureWindowAux) {
-        (
-            ConfigureWindowAux::new()
-                .x(self.x as i32)
-                .y(self.y as i32)
-                .width((self.width - width * 2) as u32)
-                .height((self.height - width * 2) as u32)
-                .border_width(width as u32),
-            ConfigureWindowAux::new()
-                .width((self.width - width * 2) as u32)
-                .height((self.height - width * 2) as u32),
-        )
+    pub fn aux(&self, width: u16) -> ConfigureWindowAux {
+        ConfigureWindowAux::new()
+            .x(self.x as i32)
+            .y(self.y as i32)
+            .width((self.width - width * 2) as u32)
+            .height((self.height - width * 2) as u32)
+            .border_width(width as u32)
     }
 
     pub fn copy(&mut self, other: &Rect) {
@@ -118,6 +90,13 @@ impl Rect {
             && point.0 < self.x + self.width as i16
             && point.1 > self.y
             && point.1 < self.y + self.height as i16
+    }
+
+    pub fn contains_rect(&self, other: &Rect) -> bool {
+        other.x >= self.x
+            && other.y >= self.y
+            && other.x + other.width as i16 <= self.x + self.width as i16
+            && other.y + other.height as i16 <= self.y + self.height as i16
     }
 
     pub fn split(&self, split: f32, vert: bool, rect1: &mut Rect, rect2: &mut Rect, gap: u16) {

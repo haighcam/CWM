@@ -1,11 +1,13 @@
-use super::Tag;
-use crate::connections::{CwmResponse, Stream, TagState};
 use log::info;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env::var;
 use std::process::{Command, Stdio};
 
+use super::Tag;
+use crate::connections::{CwmResponse, Stream, TagState};
+
+#[derive(Default)]
 pub struct Hooks {
     monitor_focused: HashMap<u32, (Vec<RefCell<Stream>>, Option<String>)>,
     pub monitor_tags: (Vec<RefCell<Stream>>, Vec<TagState>, u32),
@@ -34,11 +36,10 @@ impl Hooks {
             }
         }
         Self {
-            monitor_focused: HashMap::new(),
-            monitor_tags: (Vec::new(), Vec::new(), 0),
             script_config,
             script_mon_open,
             script_mon_close,
+            ..Self::default()
         }
     }
 
@@ -47,17 +48,18 @@ impl Hooks {
             Command::new(script)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .spawn()
+                .output()
                 .unwrap();
         }
     }
 
-    pub fn mon_open(&mut self, mon: u32, name: &str) {
+    pub fn mon_open(&mut self, mon: u32, name: &str, bg: u32) {
         self.monitor_focused.insert(mon, (Vec::new(), None));
         if let Some(script) = &self.script_mon_open {
             Command::new(script)
                 .arg(mon.to_string())
                 .arg(name)
+                .arg(bg.to_string())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()

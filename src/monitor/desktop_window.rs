@@ -1,6 +1,7 @@
-use super::{WindowLocation, WindowManager};
 use anyhow::{Context, Result};
 use x11rb::protocol::xproto::*;
+
+use super::{WindowLocation, WindowManager};
 
 #[derive(Debug)]
 pub struct DesktopWindow {}

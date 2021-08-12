@@ -1,8 +1,3 @@
-use super::utils::keymap_xmodmap;
-use crate::tag::StackLayer;
-use serde::{Deserialize, Serialize};
-use x11rb::protocol::xproto::*;
-
 pub const IGNORED_MODS: [u16; 2] = [0, (1 << 1)]; //normal mask, ignore caplock
 pub const IGNORED_MASK: u16 = !IGNORED_MODS[1];
 
@@ -26,7 +21,7 @@ impl Default for Theme {
         Self {
             border_width: 1,
             gap: 4,
-            top_margin: -4,
+            top_margin: 4,
             left_margin: 4,
             right_margin: 4,
             bottom_margin: 4,

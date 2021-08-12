@@ -23,7 +23,6 @@ fn main() {
     ])
     .unwrap();
 
-    //let wm = x11rb::connect(None).map(|(dpy, screen)| WindowManager::new(dpy, screen)).unwrap();
     cwm::run_wm();
     print!("Done");
 }

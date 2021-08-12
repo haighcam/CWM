@@ -1,9 +1,10 @@
-use super::Tag;
-use crate::utils::{three_mut, Rect};
-use crate::Aux;
 use anyhow::Result;
 use log::info;
 use serde::{Deserialize, Serialize};
+
+use super::{Client, Tag};
+use crate::utils::{three_mut, Rect};
+use crate::Aux;
 
 #[derive(PartialEq, Serialize, Deserialize, Debug)]
 pub enum Side {
@@ -43,6 +44,17 @@ pub struct LeafInfo {
     min_size: (u16, u16),
     max_size: (u16, u16),
     client: usize,
+}
+
+impl LeafInfo {
+    pub fn new(client: usize, min_size: (u16, u16), max_size: (u16, u16), floating: Rect) -> Self {
+        Self {
+            client,
+            min_size,
+            max_size,
+            floating,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -161,7 +173,6 @@ impl Tag {
         idx: usize,
         info: NodeContents,
     ) -> Result<()> {
-        info!("{:?}", self.nodes);
         let rect = self.nodes[leaf_idx].rect.clone();
         let split = split.unwrap_or_else(|| {
             if rect.width > rect.height {
@@ -400,24 +411,21 @@ impl Tag {
     ) -> Result<()> {
         let (fullscreen, floating, node) = {
             let client = &self.clients[client];
-            (
-                client.flags.fullscreen,
-                client.flags.fullscreen,
-                client.node,
-            )
+            (client.flags.fullscreen, client.flags.floating, client.node)
         };
         if !fullscreen {
             if floating {
                 if let NodeContents::Leaf(leaf) = &mut self.nodes[node].info {
                     if left {
-                        leaf.floating.x += delta.0;
-                        leaf.floating.width = leaf
+                        let width = leaf
                             .floating
                             .width
                             .overflowing_sub(delta.0 as u16)
                             .0
                             .min(leaf.max_size.0)
                             .max(leaf.min_size.0);
+                        leaf.floating.x -= width as i16 - leaf.floating.width as i16;
+                        leaf.floating.width = width;
                     } else {
                         leaf.floating.width = leaf
                             .floating
@@ -428,14 +436,15 @@ impl Tag {
                             .max(leaf.min_size.0);
                     }
                     if top {
-                        leaf.floating.y += delta.1;
-                        leaf.floating.height = leaf
+                        let height = leaf
                             .floating
                             .height
                             .overflowing_sub(delta.1 as u16)
                             .0
                             .min(leaf.max_size.1)
                             .max(leaf.min_size.1);
+                        leaf.floating.y -= height as i16 - leaf.floating.height as i16;
+                        leaf.floating.height = height;
                     } else {
                         leaf.floating.height = leaf
                             .floating
@@ -543,15 +552,18 @@ impl Tag {
         Ok(())
     }
 
-    pub fn resize_all(
-        &mut self,
-        aux: &Aux,
-        node: usize,
-        available: &Rect,
-        new_size: &Rect,
-    ) -> Result<()> {
-        self.nodes[node].rect.copy(available);
-        let mut q = vec![node];
+    pub fn resize_all(&mut self, aux: &Aux, available: &Rect, new_size: &Rect) -> Result<()> {
+        let mut tiling_size = &mut self.nodes[0].rect;
+        tiling_size.x = available.x + aux.theme.gap as i16 + aux.theme.left_margin;
+        tiling_size.y = available.y + aux.theme.gap as i16 + aux.theme.top_margin;
+        tiling_size.width = available.width
+            - (aux.theme.gap as i16 * 2 + aux.theme.right_margin + aux.theme.left_margin) as u16;
+        tiling_size.height = available.height
+            - (aux.theme.gap as i16 * 2 + aux.theme.bottom_margin + aux.theme.top_margin) as u16;
+        if *tiling_size != self.tiling_size {
+            self.tiling_size.copy(tiling_size)
+        }
+        let mut q = vec![0];
         while !q.is_empty() {
             let node_ = q.pop().unwrap();
             let node = &self.nodes[node_];
@@ -562,14 +574,18 @@ impl Tag {
                         let leaf_client = leaf.client;
                         let floating = {
                             if let NodeContents::Leaf(leaf) = &mut self.nodes[node_].info {
-                                leaf.floating.x = (leaf.floating.x as f32
-                                    / self.tiling_size.width as f32
+                                leaf.floating.x = ((leaf.floating.x - self.size.x) as f32
+                                    / self.size.width as f32
                                     * new_size.width as f32)
-                                    .round() as _;
-                                leaf.floating.y = (leaf.floating.y as f32
-                                    / self.tiling_size.height as f32
+                                    .round()
+                                    as i16
+                                    + new_size.x;
+                                leaf.floating.y = ((leaf.floating.y - self.size.y) as f32
+                                    / self.size.height as f32
                                     * new_size.height as f32)
-                                    .round() as _;
+                                    .round()
+                                    as i16
+                                    + new_size.y;
                                 leaf.floating.clone()
                             } else {
                                 Rect::default()
@@ -593,21 +609,70 @@ impl Tag {
         Ok(())
     }
 
+    pub fn add_client(
+        &mut self,
+        aux: &Aux,
+        client: Client,
+        parent: Option<usize>,
+        mut info: NodeContents,
+        split: Option<Split>,
+        focus: bool,
+    ) -> Result<usize> {
+        let absent = client.flags.absent();
+        let client = if let Some(idx) = self.free_clients.pop() {
+            self.clients[idx] = client;
+            idx
+        } else {
+            self.clients.push(client);
+            self.clients.len() - 1
+        };
+
+        if let NodeContents::Leaf(leaf) = &mut info {
+            leaf.client = client;
+        }
+
+        match self.nodes[0].info {
+            NodeContents::Empty => {
+                self.nodes[0].info = info;
+                self.nodes[0].absent = absent;
+                self.clients[client].node = 0;
+            }
+            NodeContents::Leaf(..) => {
+                self.split_leaf(aux, 0, split, absent, client, info)?;
+            }
+            NodeContents::Node(..) => {
+                let leaf = parent.unwrap_or_else(|| *self.focus_stack.front().unwrap());
+                let leaf = self.clients[leaf].node;
+                self.split_leaf(aux, leaf, split, absent, client, info)?;
+            }
+        }
+
+        self.clients[client].stack_pos = if focus {
+            self.focus_stack.push_front(client)
+        } else {
+            self.focus_stack.push_back(client)
+        };
+        Ok(client)
+    }
+
     pub fn remove_node(&mut self, aux: &Aux, node: usize) -> Result<()> {
         let parent = self.nodes[node].parent;
         self.nodes[node].info = NodeContents::Empty;
         self.free_nodes.push(node);
+        info!("removing {}", node);
         if let Some((parent_, first)) = parent {
             {
                 let info = match &self.nodes[parent_].info {
                     NodeContents::Node(node) => {
                         let child = node.get_child(!first);
+                        info!("removing {}", child);
                         self.free_nodes.push(child);
                         let child = &self.nodes[child];
                         Some((child.info.clone(), child.absent))
                     }
                     _ => None,
                 };
+                self.nodes[*self.free_nodes.last().unwrap()].info = NodeContents::Empty;
                 let parent = &mut self.nodes[parent_];
                 if let Some((info, absent)) = info {
                     parent.info = info;
@@ -617,6 +682,16 @@ impl Tag {
                 }
                 if let NodeContents::Leaf(leaf) = &parent.info {
                     self.clients[leaf.client].node = parent_;
+                } else if let NodeContents::Node(NodeInfo {
+                    first_child,
+                    second_child,
+                    ..
+                }) = &parent.info
+                {
+                    let first_child = *first_child;
+                    let second_child = *second_child;
+                    self.nodes[first_child].parent = Some((parent_, true));
+                    self.nodes[second_child].parent = Some((parent_, false));
                 }
             }
             self.resize_tiled(aux, parent_, None)?;

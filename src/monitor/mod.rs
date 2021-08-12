@@ -1,10 +1,13 @@
-use super::{tag::ClientArgs, WindowLocation, WindowManager};
-use crate::connections::Aux;
-use crate::utils::{pop_set, Rect};
 use anyhow::Result;
 use log::info;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use x11rb::connection::Connection;
 use x11rb::protocol::{randr::*, xproto::*};
+use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
+
+use super::{connections::SetArg, tag::ClientArgs, WindowLocation, WindowManager};
+use crate::connections::Aux;
+use crate::utils::{pop_set, Rect};
 
 mod desktop_window;
 mod panel;
@@ -20,6 +23,7 @@ pub struct Monitor {
     panels: HashMap<Window, Panel>,
     desktop_windows: HashMap<Window, DesktopWindow>,
     pub size: Rect,
+    pub bg: Window,
 }
 
 #[derive(Debug)]
@@ -94,6 +98,7 @@ impl WindowManager {
     pub fn add_monitor(&mut self, tag: Option<Atom>, monitor: MonitorInfo) -> Result<Atom> {
         let id = monitor.name;
         let name = String::from_utf8(get_atom_name(&self.aux.dpy, id)?.reply()?.name).unwrap();
+        let bg = self.aux.dpy.generate_id()?;
         let monitor = Monitor {
             id,
             name,
@@ -102,18 +107,56 @@ impl WindowManager {
             prev_tag: 0,
             panels: HashMap::new(),
             desktop_windows: HashMap::new(),
+            bg,
         };
         info!(" monitor: {:?}", monitor);
         let tag = tag
-            .or_else(|| pop_set(&mut self.free_tags))
+            .or_else(|| pop_set(&mut self.free_tags, &self.tag_order))
             .unwrap_or_else(|| self.temp_tag());
         self.monitors.insert(id, monitor);
         self.focused_monitor = id;
         self.set_monitor_tag(id, tag)?;
         let monitor = self.monitors.get_mut(&id).unwrap();
         monitor.prev_tag = tag;
-        self.aux.hooks.mon_open(id, &monitor.name);
+        let aux = CreateWindowAux::new().event_mask(EventMask::ENTER_WINDOW);
+        create_window(
+            &self.aux.dpy,
+            COPY_DEPTH_FROM_PARENT,
+            bg,
+            self.aux.root,
+            monitor.size.x,
+            monitor.size.y,
+            monitor.size.width,
+            monitor.size.height,
+            0,
+            WindowClass::COPY_FROM_PARENT,
+            COPY_FROM_PARENT,
+            &aux,
+        )?;
+        configure_window(
+            &self.aux.dpy,
+            bg,
+            &ConfigureWindowAux::new().stack_mode(StackMode::BELOW),
+        )?;
+        map_window(&self.aux.dpy, bg)?;
+        self.windows.insert(bg, WindowLocation::Monitor(id));
+        self.aux.hooks.mon_open(id, &monitor.name, bg);
         Ok(id)
+    }
+
+    pub fn switch_monitor_tag(&mut self, mon: Atom, tag: SetArg<Atom>) -> Result<()> {
+        if let Some((mut focused_tag, prev_tag)) =
+            self.monitors.get(&mon).map(|x| (x.focused_tag, x.prev_tag))
+        {
+            if tag.apply_arg(&mut focused_tag, prev_tag) {
+                self.set_monitor_tag(mon, focused_tag)?;
+            }
+        }
+        if self.focused_monitor == mon {
+            let tag = self.tags.get_mut(&self.focused_tag()).unwrap();
+            tag.set_focus(&mut self.aux)?;
+        }
+        Ok(())
     }
 
     pub fn set_monitor_tag(&mut self, mon: Atom, tag: Atom) -> Result<()> {
@@ -122,7 +165,6 @@ impl WindowManager {
             return Ok(());
         }
         if let Some(tag) = self.tags.get_mut(&old_tag) {
-            self.free_tags.insert(old_tag);
             tag.hide(&self.aux)?;
         }
         if let Some(old_mon) = self.tags.get(&tag).unwrap().monitor {
@@ -132,6 +174,7 @@ impl WindowManager {
             }
         } else {
             self.free_tags.remove(&tag);
+            self.free_tags.insert(old_tag);
         }
         self.tags
             .get_mut(&tag)
@@ -143,13 +186,22 @@ impl WindowManager {
         Ok(())
     }
 
-    pub fn remove_monitor(&mut self) -> Result<()> {
+    pub fn remove_monitor(&mut self, mon: Atom) -> Result<()> {
+        if let Some(mon) = self.monitors.remove(&mon) {
+            self.windows.remove(&mon.bg);
+            destroy_window(&self.aux.dpy, mon.bg)?;
+            self.tags
+                .get_mut(&mon.focused_tag)
+                .unwrap()
+                .hide(&self.aux)?;
+        }
         Ok(())
     }
 
     pub fn update_monitor(&mut self, info: MonitorInfo) -> Result<()> {
         let mon = self.monitors.get_mut(&info.name).unwrap();
         mon.size = Rect::new(info.x, info.y, info.width, info.height);
+        configure_window(&self.aux.dpy, mon.bg, &mon.size.aux(0))?;
         self.tags
             .get_mut(&mon.focused_tag)
             .unwrap()
@@ -157,14 +209,25 @@ impl WindowManager {
     }
 
     pub fn update_monitors(&mut self) -> Result<()> {
-        let monitors = get_monitors(&self.aux.dpy, self.root, true)?.reply()?;
+        let monitors = get_monitors(&self.aux.dpy, self.aux.root, true)?.reply()?;
         let mut new_mons = Vec::new();
+        let mut keep_monitors = HashSet::new();
         for mon in monitors.monitors.into_iter() {
             if self.monitors.contains_key(&mon.name) {
+                keep_monitors.insert(mon.name);
                 self.update_monitor(mon)?;
             } else {
                 new_mons.push(mon);
             }
+        }
+        let remove: Vec<_> = self
+            .monitors
+            .keys()
+            .filter(|x| !keep_monitors.contains(x))
+            .cloned()
+            .collect();
+        for mon in remove {
+            self.remove_monitor(mon)?;
         }
         for mon in new_mons {
             let size = Rect::new(mon.x, mon.y, mon.width, mon.height);

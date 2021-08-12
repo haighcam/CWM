@@ -1,4 +1,3 @@
-use super::tag::{Side, StackLayer};
 use anyhow::Result;
 use log::info;
 use nix::poll::{poll, PollFd, PollFlags};
@@ -8,11 +7,14 @@ use std::net::Shutdown;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
+use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
 
+use super::tag::{Side, StackLayer};
 use super::{AtomCollection, WindowLocation, WindowManager};
-pub use crate::config::Theme;
 use crate::hooks::Hooks;
+
+pub use crate::config::Theme;
 
 pub const SOCKET: &str = "/tmp/cwm.sock";
 
@@ -21,6 +23,7 @@ pub struct Aux {
     listener: UnixListener,
     streams: Vec<Stream>,
     poll_fds: Vec<PollFd>,
+    pub root: u32,
     pub theme: Theme,
     pub hooks: Hooks,
     pub atoms: AtomCollection,
@@ -48,15 +51,23 @@ pub enum HiddenSelection {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+pub enum TagSelection {
+    Name(String),
+    Index(usize),
+    Focused(Option<u32>),
+    Id(u32),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub enum ClientRequest {
     MonitorFocus(u32),
     TagState,
-    FocusedWindow,
-    FocusedTag,
+    FocusedWindow(TagSelection),
+    FocusedTag(Option<u32>),
     FocusedMonitor,
     Quit,
     Reload,
-    KillClient(Option<u32>),
+    CloseClient(Option<u32>, bool),
     SetLayout(Option<u32>, SetArg<Layout>),
     SetLayer(Option<u32>, SetArg<StackLayer>),
     SetFullscreen(Option<u32>, SetArg<bool>),
@@ -69,9 +80,9 @@ pub enum ClientRequest {
     CycleWindow(bool),
     CycleTag(bool),
     CycleMonitor(bool), //warp the pointer??
-    FocusTag(Option<u32>, SetArg<u32>),
+    FocusTag(Option<u32>, TagSelection, bool),
     FocusMonitor(SetArg<u32>),
-    SetWindowTag(Option<u32>, SetArg<u32>),
+    SetWindowTag(Option<u32>, TagSelection, bool),
     FocusWindow(u32), // Somekind of visual preselection?
 }
 
@@ -88,6 +99,8 @@ pub enum CwmResponse {
     MonitorFocusedClient(Option<String>),
     TagState(Vec<TagState>, u32),
     FocusedMonitor(u32),
+    FocusedTag(u32),
+    FocusedWindow(Option<u32>),
 }
 
 impl Drop for Aux {
@@ -109,7 +122,7 @@ impl AsRawFd for Stream {
 }
 
 impl Aux {
-    pub(crate) fn new(dpy: RustConnection) -> Result<Self> {
+    pub(crate) fn new(dpy: RustConnection, root: u32) -> Result<Self> {
         let _ = std::fs::remove_file(SOCKET); // possibly use this to check if it is already running.
         let listener = UnixListener::bind(SOCKET).unwrap();
         listener
@@ -128,6 +141,7 @@ impl Aux {
             listener,
             streams: Vec::new(),
             poll_fds,
+            root,
             theme: Theme::default(),
             hooks: Hooks::new(),
             atoms,
@@ -167,10 +181,7 @@ impl Stream {
     pub fn get_bytes(&mut self) -> bool {
         let mut bytes = [0u8; 256];
         match self.stream.read(&mut bytes) {
-            Ok(0) => {
-                info!("read zero");
-                true
-            }
+            Ok(0) => true,
             Ok(len) => {
                 self.data.extend(&bytes[..len]);
                 false
@@ -222,12 +233,29 @@ impl WindowManager {
         mon.unwrap_or(self.focused_monitor)
     }
 
-    fn get_tag(&self, mon: Option<u32>, tag: Option<u32>) -> Option<u32> {
-        tag.or_else(|| {
-            self.monitors
-                .get(&mon.unwrap_or(self.focused_monitor))
-                .map(|mon| mon.focused_tag)
-        })
+    fn get_tag(&self, tag: TagSelection) -> Result<Option<u32>> {
+        match tag {
+            TagSelection::Index(idx) => Ok(self.tag_order.get(idx).copied()),
+            TagSelection::Name(name) => {
+                let id = intern_atom(&self.aux.dpy, false, name.as_ref())?
+                    .reply()?
+                    .atom;
+                if self.tags.contains_key(&id) {
+                    Ok(Some(id))
+                } else {
+                    Ok(None)
+                }
+            }
+            TagSelection::Focused(mon) => {
+                let mon = self.get_monitor(mon);
+                Ok(Some(self.monitors.get(&mon).unwrap().focused_tag))
+            }
+            TagSelection::Id(tag) => Ok(if self.tags.contains_key(&tag) {
+                Some(tag)
+            } else {
+                None
+            }),
+        }
     }
 
     fn handle_request(
@@ -241,10 +269,14 @@ impl WindowManager {
         match request {
             MonitorFocus(mon) => self.aux.hooks.add_monitor_focus(mon, stream),
             TagState => self.aux.hooks.add_monitor_tag(stream),
-            KillClient(client) => {
+            CloseClient(client, kill) => {
                 info!("Killing Client");
                 if let Some((tag, client)) = self.get_client(client) {
-                    self.unmanage_window(self.tags.get(&tag).unwrap().client(client).frame)?
+                    self.tags
+                        .get(&tag)
+                        .unwrap()
+                        .client(client)
+                        .close(&self.aux, kill)?
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
@@ -299,6 +331,40 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
+            FocusedTag(mon) => {
+                let mon = self.get_monitor(mon);
+                stream.send(&CwmResponse::FocusedTag(
+                    self.monitors.get(&mon).unwrap().focused_tag,
+                ));
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            FocusedWindow(tag) => {
+                if let Some(tag) = self.get_tag(tag)? {
+                    let tag = self.tags.get(&tag).unwrap();
+                    stream.send(&CwmResponse::FocusedWindow(
+                        tag.focused_client().map(|x| tag.client(x).frame),
+                    ));
+                    self.aux.streams.push(stream);
+                    self.aux.poll_fds.push(poll_fd);
+                }
+            }
+            FocusTag(mon, tag, toggle) => {
+                if let Some(tag) = self.get_tag(tag)? {
+                    let mon = self.get_monitor(mon);
+                    self.switch_monitor_tag(mon, SetArg(tag, toggle))?;
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            SetWindowTag(client, tag, toggle) => {
+                if let Some(dest) = self.get_tag(tag)? {
+                    if let Some((tag, client)) = self.get_client(client) {
+                        self.move_client(tag, client, SetArg(dest, toggle))?;
+                    }
+                }
+            }
+
             _ => (),
         }
         Ok(())
@@ -330,7 +396,7 @@ impl WindowManager {
                     self.aux.poll_fds.push(poll_fd);
                 }
                 (false, Some(request)) => self.handle_request(stream, poll_fd, request)?,
-                x => info!("{:?}", x),
+                _ => (),
             }
         }
         Ok(())

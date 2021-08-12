@@ -1,9 +1,12 @@
+use anyhow::{Context, Result};
+use log::info;
+use serde::{Deserialize, Serialize};
+use x11rb::protocol::xproto::*;
+
 use super::Tag;
 use crate::utils::Stack;
 use crate::Aux;
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
-use x11rb::protocol::xproto::*;
+
 pub enum Layer {
     Single(Option<usize>),
     Multi(Stack<usize>),
@@ -30,6 +33,13 @@ impl Layer {
         match self {
             Layer::Single(layer) => *layer,
             Layer::Multi(layer) => layer.front().cloned(),
+        }
+    }
+
+    fn back(&self) -> Option<usize> {
+        match self {
+            Layer::Single(layer) => *layer,
+            Layer::Multi(layer) => layer.back().cloned(),
         }
     }
 
@@ -83,28 +93,39 @@ impl Tag {
     }
 
     pub fn set_layer(&mut self, aux: &Aux, idx: usize, focus: bool) -> Result<()> {
-        let client = &mut self.clients[idx];
+        let client = &self.clients[idx];
         let layer = client.layer.get() + client.flags.get_layer();
+        let mut conf_aux = self.get_rect(idx).unwrap().aux(if client.flags.fullscreen {
+            0
+        } else {
+            client.border_width
+        });
+
+        if let Some(sibling) = self.get_layer_bound_below(layer + if focus { 1 } else { 0 }) {
+            conf_aux = conf_aux.sibling(sibling).stack_mode(StackMode::BELOW);
+        } else if let Some(sibling) = self.get_layer_bound_above(layer + if focus { 1 } else { 0 })
+        {
+            conf_aux = conf_aux.sibling(sibling).stack_mode(StackMode::ABOVE);
+        }
+        configure_window(&aux.dpy, client.frame, &conf_aux).context(crate::code_loc!())?;
+        configure_window(
+            &aux.dpy,
+            client.win,
+            &conf_aux
+                .x(None)
+                .y(None)
+                .border_width(None)
+                .stack_mode(None)
+                .sibling(None),
+        )
+        .context(crate::code_loc!())?;
+        let client = &mut self.clients[idx];
         let (layer_pos, old) = if focus {
             self.layers[layer].push_front(idx)
         } else {
             self.layers[layer].push_back(idx)
         };
         client.layer_pos = (layer, layer_pos);
-        let client = &self.clients[idx];
-        let (mut aux1, aux2) = self.get_rect(idx).unwrap().aux(if client.flags.fullscreen {
-            0
-        } else {
-            client.border_width
-        });
-        aux1 = if let Some(sibling) = self.get_layer_bound(layer + if focus { 1 } else { 0 }) {
-            aux1.sibling(self.clients[sibling].frame)
-                .stack_mode(StackMode::BELOW)
-        } else {
-            aux1.stack_mode(StackMode::ABOVE)
-        };
-        configure_window(&aux.dpy, client.frame, &aux1).context(crate::code_loc!())?;
-        configure_window(&aux.dpy, client.win, &aux2).context(crate::code_loc!())?;
         if let Some(idx) = old {
             self.clients[idx].flags.fullscreen = false;
             if !self.clients[idx].flags.floating {
@@ -115,16 +136,28 @@ impl Tag {
         Ok(())
     }
 
-    fn get_layer_bound(&self, layer: usize) -> Option<usize> {
-        if layer < Layer::SUBCOUNT * Layer::COUNT {
-            for layer in layer..(Layer::SUBCOUNT * Layer::COUNT) {
-                if let Some(window) = self.layers[layer].front() {
-                    return Some(window);
-                }
-            }
+    fn get_layer_bound_below(&self, layer: usize) -> Option<u32> {
+        if layer > Layer::SUBCOUNT * Layer::COUNT {
             None
         } else {
+            self.layers[layer..]
+                .iter()
+                .filter_map(|x| x.back())
+                .map(|x| self.clients[x].frame)
+                .next()
+        }
+    }
+
+    fn get_layer_bound_above(&self, layer: usize) -> Option<u32> {
+        if layer > Layer::SUBCOUNT * Layer::COUNT {
             None
+        } else {
+            self.layers[..layer]
+                .iter()
+                .rev()
+                .filter_map(|x| x.front())
+                .map(|x| self.clients[x].frame)
+                .next()
         }
     }
 }

@@ -1,12 +1,13 @@
+use anyhow::{Context, Result};
+use log::info;
 use x11rb::{
     protocol::{randr::*, xproto::*, Event},
     CURRENT_TIME, NONE,
 };
 
+use super::config::IGNORED_MASK;
+use super::connections::SetArg;
 use super::{WindowLocation, WindowManager};
-use crate::config::IGNORED_MASK;
-use anyhow::{Context, Result};
-use log::info;
 
 pub(crate) struct EventHandler {
     drag: DragState,
@@ -38,7 +39,10 @@ impl EventHandler {
             Event::PropertyNotify(ev) => self.handle_property_notify(wm, ev),
             Event::UnmapNotify(ev) => self.handle_unmap_notify(wm, ev),
             Event::RandrScreenChangeNotify(ev) => self.handle_randr_norify(wm, ev),
-            _e => Ok(()), //info!("Unhandled Event: {:?}", e)
+            _e => {
+                //info!("Unhandled Event: {:?}", _e);
+                Ok(())
+            }
         }
     }
 
@@ -54,18 +58,31 @@ impl EventHandler {
 
     fn handle_enter_notify(&mut self, wm: &mut WindowManager, e: EnterNotifyEvent) -> Result<()> {
         info!("Handling Enter {}({})", e.event, e.child);
-        if let Some(WindowLocation::Client(tag, client)) = wm.windows.get(&e.event) {
-            wm.tags
-                .get_mut(tag)
-                .unwrap()
-                .focus_client(&mut wm.aux, *client)?;
+        match wm.windows.get(&e.event) {
+            Some(WindowLocation::Client(tag, client)) => {
+                let tag = wm.tags.get_mut(tag).unwrap();
+                if let Some(mon) = tag.monitor {
+                    wm.focused_monitor = mon
+                }
+                tag.focus_client(&mut wm.aux, *client)?;
+            }
+            Some(WindowLocation::Monitor(mon)) => {
+                wm.focused_monitor = *mon;
+            }
+            _ => (),
         }
         Ok(())
     }
     fn handle_map_request(&mut self, wm: &mut WindowManager, e: MapRequestEvent) -> Result<()> {
-        info!("Handling Map Request");
-        wm.manage_window(wm.focused_monitor, e.window)?;
-        Ok(())
+        info!("Handling Map Request {:?}", e);
+        match wm.windows.get(&e.window) {
+            Some(WindowLocation::Client(..)) => {
+                // wants to be mapped
+                Ok(())
+            }
+            None => wm.manage_window(wm.focused_monitor, e.window),
+            _ => Ok(()),
+        }
     }
     fn handle_destroy_notify(
         &mut self,
@@ -78,7 +95,19 @@ impl EventHandler {
     }
     fn handle_unmap_notify(&mut self, wm: &mut WindowManager, e: UnmapNotifyEvent) -> Result<()> {
         info!("Handling Unmap Notify {}, {}", e.event, e.window);
-        wm.unmanage_window(e.window)?;
+        info!("{:?}", e);
+        let mut unmap = true;
+        if let Some(WindowLocation::Client(tag, client)) = wm.windows.get(&e.window) {
+            let client = wm.tags.get_mut(tag).unwrap().client_mut(*client);
+            if client.ignore_unmaps != 0 {
+                info!("ignore unmap {}", client.ignore_unmaps);
+                client.ignore_unmaps -= 1;
+                unmap = false;
+            }
+        }
+        if unmap {
+            wm.unmanage_window(e.window)?;
+        }
         Ok(())
     }
     fn handle_property_notify(
@@ -179,7 +208,7 @@ impl EventHandler {
                     grab_pointer(
                         &wm.aux.dpy,
                         false,
-                        wm.root,
+                        wm.aux.root,
                         u32::from(
                             EventMask::BUTTON_RELEASE
                                 | EventMask::POINTER_MOTION
@@ -187,7 +216,7 @@ impl EventHandler {
                         ) as u16,
                         GrabMode::ASYNC,
                         GrabMode::ASYNC,
-                        wm.root,
+                        wm.aux.root,
                         NONE,
                         CURRENT_TIME,
                     )
@@ -205,20 +234,40 @@ impl EventHandler {
         info!("Handling Motion");
         let tag = wm.focused_tag();
         let tag = wm.tags.get_mut(&tag).unwrap();
-        let poin = query_pointer(&wm.aux.dpy, wm.root)
+        let poin = query_pointer(&wm.aux.dpy, wm.aux.root)
             .context(crate::code_loc!())?
             .reply()
             .context(crate::code_loc!())?;
         match self.drag.button {
-            1 => tag.move_client(
-                &wm.aux,
-                self.drag.win,
-                (
-                    poin.root_x - self.drag.prev.0,
-                    poin.root_y - self.drag.prev.1,
-                ),
-                &(poin.root_x, poin.root_y),
-            )?,
+            1 => {
+                let pos = (poin.root_x, poin.root_y);
+                if !wm
+                    .monitors
+                    .get(&wm.focused_monitor)
+                    .unwrap()
+                    .size
+                    .contains(&pos)
+                {
+                    let old_tag = tag.id;
+                    for mon in wm.monitors.values() {
+                        if mon.size.contains(&pos) {
+                            wm.focused_monitor = mon.id;
+                            break;
+                        }
+                    }
+                    wm.move_client(old_tag, self.drag.win, SetArg(wm.focused_tag(), false))?
+                } else {
+                    tag.move_client(
+                        &wm.aux,
+                        self.drag.win,
+                        (
+                            poin.root_x - self.drag.prev.0,
+                            poin.root_y - self.drag.prev.1,
+                        ),
+                        &pos,
+                    )?
+                }
+            }
             3 => tag.resize_client(
                 &wm.aux,
                 self.drag.win,
