@@ -1,18 +1,22 @@
 use anyhow::Result;
 use log::info;
-use std::collections::{hash_map::Entry, HashSet};
+use std::collections::{hash_map::Entry, HashSet, VecDeque};
 use x11rb::protocol::xproto::*;
 
-use super::{Monitor, WindowManager};
+use super::{Monitor, };
 use crate::utils::{Rect, Stack};
-use crate::{Aux, Hooks};
+use crate::{Aux, Hooks, WindowManager};
+use crate::connections::{HiddenSelection, SetArg};
+
 
 mod client;
 mod layer;
 mod node;
 use client::Client;
 use layer::Layer;
-use node::{Node, NodeContents, Split};
+use node::{Node, Split};
+
+pub use node::NodeContents;
 
 pub use client::ClientArgs;
 pub use layer::StackLayer;
@@ -27,10 +31,12 @@ pub struct Tag {
     free_clients: Vec<usize>,
     focus_stack: Stack<usize>,
     layers: [Layer; Layer::COUNT * Layer::SUBCOUNT],
-    size: Rect,
+    pub size: Rect,
     tiling_size: Rect,
+    focused: Option<usize>,
     pub monitor: Option<Atom>,
     urgent: HashSet<usize>,
+    hidden: VecDeque<usize>,
     temp: bool,
     bg: Option<Window>,
 }
@@ -56,13 +62,17 @@ impl Tag {
         &mut self.clients[client]
     }
 
+    pub fn node_mut(&mut self, node: usize) -> &mut Node {
+        &mut self.nodes[node]
+    }
+
     pub fn set_monitor(&mut self, aux: &mut Aux, monitor: &mut Monitor) -> Result<()> {
         if monitor.focused_tag == self.id {
             return Ok(());
         }
         // resize the windows
         let available = monitor.free_rect();
-        info!("resizing");
+        info!("resizing, {:?}, {:?}", self.size, monitor.size);
         self.resize_all(aux, &available, &monitor.size)?;
         info!("showing windows");
         for client in self.clients.iter() {
@@ -88,14 +98,30 @@ impl Tag {
         Ok(())
     }
 
+    pub fn show_clients(&mut self, aux: &mut Aux, selection: HiddenSelection) -> Result<()> {
+        match selection {
+            HiddenSelection::Last => if let Some(client) = self.hidden.pop_back() {
+                self.set_hidden(aux, client, &SetArg(false, false))?
+            },
+            HiddenSelection::First => if let Some(client) = self.hidden.pop_front() {
+                self.set_hidden(aux, client, &SetArg(false, false))?
+            },
+            HiddenSelection::All => for client in self.hidden.drain(..).collect::<Vec<_>>() {
+                self.set_hidden(aux, client, &SetArg(false, false))?
+            }
+        }
+        Ok(())
+    }
+
     pub fn hide(&mut self, aux: &Aux) -> Result<()> {
         self.monitor.take();
         self.bg.take();
         for client in self.clients.iter_mut() {
-            if !client.flags.hidden {
+            if !client.flags.sticky && !client.flags.hidden {
                 client.hide(aux)?;
             }
         }
+        self.unset_focus(aux)?;
         Ok(())
     }
 
@@ -134,8 +160,10 @@ impl Default for Tag {
             ],
             size: Rect::new(0, 0, 1920, 1080),
             tiling_size: Rect::default(),
+            focused: None,
             monitor: None,
             urgent: HashSet::new(),
+            hidden: VecDeque::new(),
             temp: false,
             bg: None,
         }

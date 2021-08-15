@@ -86,9 +86,9 @@ impl Rect {
     }
 
     pub fn contains(&self, point: &(i16, i16)) -> bool {
-        point.0 > self.x
+        point.0 >= self.x
             && point.0 < self.x + self.width as i16
-            && point.1 > self.y
+            && point.1 >= self.y
             && point.1 < self.y + self.height as i16
     }
 
@@ -117,6 +117,21 @@ impl Rect {
             rect2.width = self.width;
             rect2.height = self.height - (rect1.height + gap);
         };
+    }
+
+    pub fn reposition(&mut self, old_size: &Rect, new_size: &Rect) {
+        self.x = ((self.x - old_size.x) as f32
+                / old_size.width as f32
+                * new_size.width as f32)
+                .round()
+                as i16
+                + new_size.x;
+        self.y = ((self.y - old_size.y) as f32
+            / old_size.height as f32
+            * new_size.height as f32)
+            .round()
+            as i16
+            + new_size.y;
     }
 }
 
@@ -152,6 +167,10 @@ pub mod stack {
     }
 
     impl<T> Stack<T> {
+        pub fn len(&self) -> usize {
+            self.items.len() - self.free.len()
+        }
+
         pub fn front(&self) -> Option<&T> {
             self.head.map(|x| &self.items[x].item)
         }
@@ -206,6 +225,30 @@ pub mod stack {
             match self.items[idx].next {
                 Some(next_idx) => self.items[next_idx].prev = self.items[idx].prev,
                 None => self.tail = self.items[idx].prev,
+            }
+        }
+
+        pub fn iter(&self) -> StackIter<'_, T> {
+            StackIter {
+                stack: self,
+                curr: self.head
+            }
+        }
+    }
+
+    pub struct StackIter<'a, T> {
+        stack: &'a Stack<T>,
+        curr: Option<usize>
+    }
+
+    impl<'a, T> Iterator for StackIter<'a, T> {
+        type Item = &'a T;
+        fn next(&mut self) -> Option<&'a T> {
+            if let Some(item) = self.curr.and_then(|x| self.stack.items.get(x)) {
+                self.curr = item.next;
+                Some(&item.item)
+            } else {
+                None
             }
         }
     }

@@ -8,6 +8,7 @@ use x11rb::{
 use super::config::IGNORED_MASK;
 use super::connections::SetArg;
 use super::{WindowLocation, WindowManager};
+use super::tag::NodeContents;
 
 pub(crate) struct EventHandler {
     drag: DragState,
@@ -60,14 +61,17 @@ impl EventHandler {
         info!("Handling Enter {}({})", e.event, e.child);
         match wm.windows.get(&e.event) {
             Some(WindowLocation::Client(tag, client)) => {
-                let tag = wm.tags.get_mut(tag).unwrap();
-                if let Some(mon) = tag.monitor {
-                    wm.focused_monitor = mon
+                let (tag, client) = (*tag, *client);
+                if let Some(mon) = wm.tags.get(&tag).unwrap().monitor {
+                    wm.set_focus(mon)?;
                 }
-                tag.focus_client(&mut wm.aux, *client)?;
+                let tag = wm.tags.get_mut(&tag).unwrap();
+                if tag.client(client).ignore_unmaps == 0 {
+                    tag.focus_client(&mut wm.aux, client)?;
+                }
             }
             Some(WindowLocation::Monitor(mon)) => {
-                wm.focused_monitor = *mon;
+                wm.set_focus(*mon)?;
             }
             _ => (),
         }
@@ -248,6 +252,7 @@ impl EventHandler {
                     .size
                     .contains(&pos)
                 {
+                    info!("{:?}", pos);
                     let old_tag = tag.id;
                     for mon in wm.monitors.values() {
                         if mon.size.contains(&pos) {
@@ -255,7 +260,24 @@ impl EventHandler {
                             break;
                         }
                     }
-                    wm.move_client(old_tag, self.drag.win, SetArg(wm.focused_tag(), false))?
+                    if old_tag != wm.focused_tag() {
+                        let tag = wm.tags.get_mut(&old_tag).unwrap();
+                        let size = tag.size.clone();
+                        let node = &mut tag.node_mut(tag.client(self.drag.win).node);
+                        if let NodeContents::Leaf(leaf) = &mut node.info {
+                            if pos.0 < size.x {
+                                leaf.floating.x += size.width as i16;
+                            } else if pos.0 >= size.x + size.width as i16 {
+                                leaf.floating.x -= size.width as i16;
+                            }
+                            if pos.1 < size.y {
+                                leaf.floating.y += size.height as i16;
+                            } else if pos.1 >= size.y + size.height as i16 {
+                                leaf.floating.y -= size.height as i16;
+                            }
+                        }
+                    }
+                    self.drag.win = wm.move_client(old_tag, self.drag.win, SetArg(wm.focused_tag(), false))?;
                 } else {
                     tag.move_client(
                         &wm.aux,

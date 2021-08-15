@@ -10,10 +10,11 @@ use std::time::Duration;
 use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
 
-use super::tag::{Side, StackLayer};
+use super::tag::{StackLayer};
 use super::{AtomCollection, WindowLocation, WindowManager};
 use crate::hooks::Hooks;
 
+pub use crate::tag::Side;
 pub use crate::config::Theme;
 
 pub const SOCKET: &str = "/tmp/cwm.sock";
@@ -44,10 +45,9 @@ pub enum Layout {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum HiddenSelection {
-    Client(u32),
     All,
     First,
-    Last,
+    Last
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -74,9 +74,10 @@ pub enum ClientRequest {
     SetFloating(Option<u32>, SetArg<bool>),
     SetSticky(Option<u32>, SetArg<bool>),
     SetHidden(Option<u32>, SetArg<bool>),
-    Show(HiddenSelection),
+    Show(TagSelection, HiddenSelection),
     ResizeWindow(Option<u32>, Side, i16), // +grow, -shrink
     MoveWindow(Option<u32>, Side, u16),   // floating move amnt, tiling swap neighbour
+    SelectNeighbour(Option<u32>, Side),   // select tiling neighbour
     CycleWindow(bool),
     CycleTag(bool),
     CycleMonitor(bool), //warp the pointer??
@@ -84,6 +85,8 @@ pub enum ClientRequest {
     FocusMonitor(SetArg<u32>),
     SetWindowTag(Option<u32>, TagSelection, bool),
     FocusWindow(u32), // Somekind of visual preselection?
+    TagName(TagSelection),
+    MonitorName(Option<u32>)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -101,6 +104,7 @@ pub enum CwmResponse {
     FocusedMonitor(u32),
     FocusedTag(u32),
     FocusedWindow(Option<u32>),
+    Name(String)
 }
 
 impl Drop for Aux {
@@ -229,8 +233,16 @@ impl WindowManager {
         }
     }
 
-    fn get_monitor(&self, mon: Option<u32>) -> u32 {
-        mon.unwrap_or(self.focused_monitor)
+    fn get_monitor(&self, mon: Option<u32>) -> Option<u32> {
+        if let Some(mon) = mon {
+            if self.monitors.contains_key(&mon) {
+                Some(mon)
+            } else {
+                None
+            }
+        } else {
+            Some(self.focused_monitor)
+        }
     }
 
     fn get_tag(&self, tag: TagSelection) -> Result<Option<u32>> {
@@ -247,8 +259,7 @@ impl WindowManager {
                 }
             }
             TagSelection::Focused(mon) => {
-                let mon = self.get_monitor(mon);
-                Ok(Some(self.monitors.get(&mon).unwrap().focused_tag))
+                Ok(self.get_monitor(mon).map(|x| self.monitors.get(&x).unwrap().focused_tag))
             }
             TagSelection::Id(tag) => Ok(if self.tags.contains_key(&tag) {
                 Some(tag)
@@ -321,7 +332,26 @@ impl WindowManager {
             SetSticky(client, arg) => {
                 info!("Sticky {:?}", arg);
                 if let Some((tag, client)) = self.get_client(client) {
-                    self.tags.get_mut(&tag).unwrap().set_sticky(client, &arg)
+                    self.set_sticky(tag, client, &arg);
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            SetHidden(client, arg) => {
+                info!("Hidden {:?}", arg);
+                if let Some((tag, client)) = self.get_client(client) {
+                    self.tags
+                        .get_mut(&tag)
+                        .unwrap()
+                        .set_hidden(&mut self.aux, client, &arg)?
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            Show(tag, selection) => {
+                info!("Show {:?}, {:?}", tag, selection);
+                if let Some(tag) = self.get_tag(tag)? {
+                    self.tags.get_mut(&tag).unwrap().show_clients(&mut self.aux, selection)?;
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
@@ -332,10 +362,11 @@ impl WindowManager {
                 self.aux.poll_fds.push(poll_fd);
             }
             FocusedTag(mon) => {
-                let mon = self.get_monitor(mon);
-                stream.send(&CwmResponse::FocusedTag(
-                    self.monitors.get(&mon).unwrap().focused_tag,
-                ));
+                if let Some(mon) = self.get_monitor(mon) {
+                    stream.send(&CwmResponse::FocusedTag(
+                        self.monitors.get(&mon).unwrap().focused_tag,
+                    ));
+                }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
@@ -350,8 +381,7 @@ impl WindowManager {
                 }
             }
             FocusTag(mon, tag, toggle) => {
-                if let Some(tag) = self.get_tag(tag)? {
-                    let mon = self.get_monitor(mon);
+                if let (Some(mon), Some(tag)) = (self.get_monitor(mon), self.get_tag(tag)?) {
                     self.switch_monitor_tag(mon, SetArg(tag, toggle))?;
                 }
                 self.aux.streams.push(stream);
@@ -362,6 +392,56 @@ impl WindowManager {
                     if let Some((tag, client)) = self.get_client(client) {
                         self.move_client(tag, client, SetArg(dest, toggle))?;
                     }
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            },
+            CycleWindow(rev) => {
+                let tag = self.focused_tag();
+                let tag = self.tags.get_mut(&tag).unwrap();
+                tag.cycle(&mut self.aux, rev)?;
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            },
+            SelectNeighbour(client, side) => {
+                if let Some((tag, client)) = self.get_client(client) {
+                    let tag = self.tags.get_mut(&tag).unwrap();
+                    if let Some(neighbour) = tag.get_neighbour(client, side) {
+                        tag.focus_client(&mut self.aux, neighbour)?;
+                    }
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            },
+            MoveWindow(client, side, amt) => {
+                if let Some((tag, client)) = self.get_client(client) {
+                    let tag = self.tags.get_mut(&tag).unwrap();
+                    tag.move_side(&self.aux, client, side, amt)?;
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            },
+            ResizeWindow(client, side, amt) => {
+                if let Some((tag, client)) = self.get_client(client) {
+                    let tag = self.tags.get_mut(&tag).unwrap();
+                    let delta = side.parse_amt(amt);
+                    tag.resize_client(&self.aux, client, delta, side==Side::Left, side==Side::Top)?;
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            },
+            MonitorName(mon) => {
+                if let Some(mon) = self.get_monitor(mon) {
+                    stream.send(&CwmResponse::Name(
+                        self.monitors.get(&mon).unwrap().name.clone(),
+                    ));
+                }
+            },
+            TagName(tag) => {
+                if let Some(tag) = self.get_tag(tag)? {
+                    stream.send(&CwmResponse::Name(
+                        self.tags.get(&tag).unwrap().name.clone(),
+                    ));
                 }
             }
 

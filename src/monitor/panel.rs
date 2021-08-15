@@ -56,18 +56,18 @@ impl WindowManager {
             }
         }
         info!("panel registered {} mon: {}", win, mon);
-        self.monitors
-            .get_mut(&mon)
-            .unwrap()
-            .panels
-            .insert(win, Panel::new(&self.aux, win)?);
-        change_window_attributes(
-            &self.aux.dpy,
-            win,
-            &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
-        )
-        .context(crate::code_loc!())?;
-        map_window(&self.aux.dpy, win).context(crate::code_loc!())?;
+        {
+            let mon = self.monitors.get_mut(&mon).unwrap();
+            mon.panels.insert(win, Panel::new(&self.aux, win)?);
+            change_window_attributes(
+                &self.aux.dpy,
+                win,
+                &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+            )
+            .context(crate::code_loc!())?;
+            configure_window(&self.aux.dpy, win, &ConfigureWindowAux::new().sibling(mon.bg).stack_mode(StackMode::ABOVE))?;
+            map_window(&self.aux.dpy, win).context(crate::code_loc!())?;
+        }
         self.panel_changed(mon)?;
         self.windows.insert(win, WindowLocation::Panel(mon));
         Ok(())
@@ -76,11 +76,7 @@ impl WindowManager {
     pub fn panel_unregister(&mut self, mon: Atom, win: Window) -> Result<()> {
         if self
             .monitors
-            .get_mut(&mon)
-            .unwrap()
-            .panels
-            .remove(&win)
-            .is_some()
+            .get_mut(&mon).and_then(|mon| mon.panels.remove(&win)).is_some()
         {
             change_window_attributes(
                 &self.aux.dpy,

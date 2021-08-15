@@ -5,8 +5,8 @@ use x11rb::connection::Connection;
 use x11rb::protocol::{randr::*, xproto::*};
 use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
 
-use super::{connections::SetArg, tag::ClientArgs, WindowLocation, WindowManager};
-use crate::connections::Aux;
+use super::{tag::ClientArgs, WindowLocation, WindowManager};
+use crate::connections::{Aux, SetArg};
 use crate::utils::{pop_set, Rect};
 
 mod desktop_window;
@@ -22,6 +22,7 @@ pub struct Monitor {
     pub prev_tag: Atom,
     panels: HashMap<Window, Panel>,
     desktop_windows: HashMap<Window, DesktopWindow>,
+    pub sticky: HashSet<usize>,
     pub size: Rect,
     pub bg: Window,
 }
@@ -97,6 +98,10 @@ impl WindowManager {
     // maybe make sure that focused tag isn't currently viewed (that would break things)
     pub fn add_monitor(&mut self, tag: Option<Atom>, monitor: MonitorInfo) -> Result<Atom> {
         let id = monitor.name;
+        if self.monitors.is_empty() {
+            self.focused_monitor = id;
+            self.prev_monitor = id;
+        }
         let name = String::from_utf8(get_atom_name(&self.aux.dpy, id)?.reply()?.name).unwrap();
         let bg = self.aux.dpy.generate_id()?;
         let monitor = Monitor {
@@ -107,6 +112,7 @@ impl WindowManager {
             prev_tag: 0,
             panels: HashMap::new(),
             desktop_windows: HashMap::new(),
+            sticky: HashSet::new(),
             bg,
         };
         info!(" monitor: {:?}", monitor);
@@ -114,7 +120,7 @@ impl WindowManager {
             .or_else(|| pop_set(&mut self.free_tags, &self.tag_order))
             .unwrap_or_else(|| self.temp_tag());
         self.monitors.insert(id, monitor);
-        self.focused_monitor = id;
+//        self.focused_monitor = id;
         self.set_monitor_tag(id, tag)?;
         let monitor = self.monitors.get_mut(&id).unwrap();
         monitor.prev_tag = tag;
@@ -164,13 +170,21 @@ impl WindowManager {
         if old_tag == tag {
             return Ok(());
         }
-        if let Some(tag) = self.tags.get_mut(&old_tag) {
+        let old_valid = if let Some(tag) = self.tags.get_mut(&old_tag) {
             tag.hide(&self.aux)?;
-        }
+            true
+        } else {
+            false
+        };
         if let Some(old_mon) = self.tags.get(&tag).unwrap().monitor {
             self.tags.get_mut(&tag).unwrap().hide(&self.aux)?;
-            if let Some(old_tag) = self.tags.get_mut(&old_tag) {
-                old_tag.set_monitor(&mut self.aux, self.monitors.get_mut(&old_mon).unwrap())?;
+            if old_valid {
+                self.tags.get_mut(&old_tag).unwrap().set_monitor(&mut self.aux, self.monitors.get_mut(&old_mon).unwrap())?;
+                let mut sticky = self.monitors.get_mut(&old_mon).unwrap().sticky.drain().collect::<Vec<_>>();
+                for client in sticky.iter_mut() {
+                    *client = self.move_client(tag, *client, SetArg(old_tag, false))?
+                }
+                self.monitors.get_mut(&old_mon).unwrap().sticky.extend(sticky);
             }
         } else {
             self.free_tags.remove(&tag);
@@ -180,6 +194,13 @@ impl WindowManager {
             .get_mut(&tag)
             .unwrap()
             .set_monitor(&mut self.aux, self.monitors.get_mut(&mon).unwrap())?;
+        if old_valid {
+            let mut sticky = self.monitors.get_mut(&mon).unwrap().sticky.drain().collect::<Vec<_>>();
+            for client in sticky.iter_mut() {
+                *client = self.move_client(old_tag, *client, SetArg(tag, false))?
+            }
+            self.monitors.get_mut(&mon).unwrap().sticky.extend(sticky);
+        }
         self.aux
             .hooks
             .tag_update(&self.tags, &self.tag_order, self.focused_monitor);
@@ -188,12 +209,18 @@ impl WindowManager {
 
     pub fn remove_monitor(&mut self, mon: Atom) -> Result<()> {
         if let Some(mon) = self.monitors.remove(&mon) {
+            info!("removing mon {} {}", mon.name, mon.id);
             self.windows.remove(&mon.bg);
             destroy_window(&self.aux.dpy, mon.bg)?;
+            let tag = self.tags.get_mut(&mon.focused_tag).unwrap();
+            for client in mon.sticky {
+                tag.client_mut(client).flags.sticky = false;
+            }
             self.tags
                 .get_mut(&mon.focused_tag)
                 .unwrap()
                 .hide(&self.aux)?;
+            self.free_tags.insert(mon.focused_tag);
         }
         Ok(())
     }
@@ -242,6 +269,38 @@ impl WindowManager {
                 self.add_monitor(None, mon)?;
             }
         }
+        Ok(())
+    }
+
+    pub fn set_sticky(&mut self, tag: Atom, client: usize, arg: &SetArg<bool>) {
+        let tag = self.tags.get_mut(&tag).unwrap();
+        if let Some(mon) = tag.monitor {
+            let sticky = &mut tag.client_mut(client).flags.sticky;
+            if arg.apply(sticky) {
+                let mon = self.monitors.get_mut(&mon).unwrap();
+                if *sticky {
+                    mon.sticky.insert(client);
+                } else {
+                    mon.sticky.remove(&client);
+                }
+            }
+        }
+    }
+
+    pub fn set_focus(&mut self, mon: Atom) -> Result<()>{
+        if mon != self.focused_monitor {
+            info!("focusing mon {}", mon);
+            if let Some(tag) = self.monitors.get(&self.focused_monitor).map(|x| x.focused_tag) {
+                self.tags.get_mut(&tag).unwrap().unset_focus(&self.aux)?;
+                self.prev_monitor = self.focused_monitor;
+            }            
+            self.focused_monitor = mon;
+            let tag = self.monitors.get(&self.focused_monitor).unwrap().focused_tag;
+            self.tags.get_mut(&tag).unwrap().set_focus(&mut self.aux)?;
+        }
+        self.aux
+            .hooks
+            .tag_update(&self.tags, &self.tag_order, self.focused_monitor);
         Ok(())
     }
 }

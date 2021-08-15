@@ -1,17 +1,40 @@
 use anyhow::Result;
 use log::info;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use super::{Client, Tag};
 use crate::utils::{three_mut, Rect};
 use crate::Aux;
 
-#[derive(PartialEq, Serialize, Deserialize, Debug)]
+#[derive(PartialEq, Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum Side {
     Left,
     Right,
     Top,
     Bottom,
+}
+
+impl Side {
+    fn get_split(&self) -> (Split, bool) {
+        use Side::*;
+        match self {
+            Left => (Split::Horizontal, true),
+            Right => (Split::Horizontal, false),
+            Top => (Split::Vertical, false),
+            Bottom => (Split::Vertical, false)
+        }
+    }
+
+    pub fn parse_amt(&self, amt: i16) -> (i16, i16) {
+        use Side::*;
+        match self {
+            Left => (-amt, 0),
+            Right => (amt, 0),
+            Top => (0, -amt),
+            Bottom => (0, amt)
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -40,7 +63,7 @@ impl NodeInfo {
 
 #[derive(Clone, Debug)]
 pub struct LeafInfo {
-    floating: Rect,
+    pub floating: Rect,
     min_size: (u16, u16),
     max_size: (u16, u16),
     client: usize,
@@ -118,7 +141,7 @@ impl Tag {
         }
     }
 
-    fn resize_node(&mut self, aux: &Aux, node: usize, to_process: &mut Vec<usize>) {
+    fn resize_node(&mut self, aux: &Aux, node: usize, to_process: &mut Vec<usize>, force_process: bool) {
         if let Some((_child1, _child2)) = if let NodeContents::Node(node) = &self.nodes[node].info {
             Some((node.first_child, node.second_child))
         } else {
@@ -132,10 +155,16 @@ impl Tag {
                     (true, false) => {
                         child2.rect.copy(&node.rect);
                         to_process.push(_child2);
+                        if force_process {
+                            to_process.push(_child1);
+                        }
                     }
                     (false, true) => {
                         child1.rect.copy(&node.rect);
                         to_process.push(_child1);
+                        if force_process {
+                            to_process.push(_child2);
+                        }
                     }
                     (false, false) => {
                         node.rect.split(
@@ -219,7 +248,7 @@ impl Tag {
         if leaf_absent && !absent {
             self.propagate_absent(aux, leaf_idx)?;
         } else if !(leaf_absent && absent) {
-            self.resize_node(aux, leaf_idx, &mut vec![]);
+            self.resize_node(aux, leaf_idx, &mut vec![], false);
         }
         if !leaf_absent && idx2.is_some() {
             self.apply_pos_size(aux, idx2.unwrap(), &self.nodes[first_child].rect, true)?;
@@ -260,7 +289,7 @@ impl Tag {
             let node_ = q.pop().unwrap();
             let node = &self.nodes[node_];
             match &node.info {
-                NodeContents::Node(_) => self.resize_node(aux, node_, &mut q),
+                NodeContents::Node(_) => self.resize_node(aux, node_, &mut q, false),
                 NodeContents::Leaf(leaf) => {
                     if !node.absent {
                         self.apply_pos_size(aux, leaf.client, &node.rect, true)?
@@ -272,13 +301,13 @@ impl Tag {
         Ok(())
     }
 
-    fn get_split_parent(&self, node: usize, split_dir: Side) -> (Option<usize>, usize) {
-        let mut _parent = self.nodes[node].parent.map(|x| x.0);
+    fn get_split_parent(&self, node: usize, split_dir: Side) -> (Option<(usize, bool)>, usize) {
+        let mut _parent = self.nodes[node].parent;
         let node_rect = &self.nodes[node].rect;
         let mut i = 0;
         while _parent.is_some() {
             _parent = {
-                let parent = &self.nodes[_parent.unwrap()];
+                let parent = &self.nodes[_parent.unwrap().0];
                 match (parent, &split_dir) {
                     (
                         Node {
@@ -336,7 +365,7 @@ impl Tag {
                     }
                     _ => (),
                 }
-                parent.parent.map(|x| x.0)
+                parent.parent
             };
             i += 1;
         }
@@ -399,6 +428,71 @@ impl Tag {
             }
         }
         Ok(())
+    }
+
+    pub fn move_side(&mut self, aux: &Aux, client_: usize, side: Side, amount: u16) -> Result<()> {
+        info!("moving {:?}", side);
+        let client = &self.clients[client_];
+        if !client.flags.fullscreen {
+            if client.flags.floating {
+                if let NodeContents::Leaf(leaf) = &mut self.nodes[client.node].info {
+                    let delta = side.parse_amt(amount as i16);
+                    leaf.floating.x += delta.0;
+                    leaf.floating.y += delta.1;
+                }
+                if let NodeContents::Leaf(leaf) = &self.nodes[client.node].info {
+                    self.apply_pos_size(aux, client_, &leaf.floating, true)?;
+                }
+            } else if let Some(other) = self.get_neighbour(client_, side) {
+                let other_node = self.clients[other].node;
+                let node = client.node;
+                self.clients[other].node = node;
+                self.clients[client_].node = other_node;
+                let info = self.nodes[node].info.clone();
+                self.nodes[node].info = self.nodes[other_node].info.clone();
+                self.nodes[other_node].info = info;
+                self.apply_pos_size(aux, client_, &self.nodes[other_node].rect, true)?;
+                self.apply_pos_size(aux, other, &self.nodes[node].rect, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_neighbour(&self, client: usize, side: Side) -> Option<usize> {
+        let node = self.clients[client].node;
+        let parent = self.get_split_parent(node, side).0;
+        if let Some((parent, first)) = parent {
+            if let NodeContents::Node(node) = &self.nodes[parent].info {
+                let mut siblings = HashSet::new();
+                let mut q = vec![node.get_child(!first)];
+                let (split, first) = side.get_split();
+                while !q.is_empty() {
+                    let item = &self.nodes[q.pop().unwrap()];
+                    if !item.absent {
+                        match &item.info {
+                            NodeContents::Leaf(leaf) => {
+                                siblings.insert(leaf.client);
+                            }
+                            NodeContents::Node(node) => {
+                                if node.split != split {
+                                    q.push(node.get_child(!first))
+                                } else {
+                                    q.push(node.first_child);
+                                    q.push(node.second_child);
+                                }
+                            },
+                            _ => ()
+                        }
+                    }
+                }
+                match siblings.len() {
+                    0 => (),
+                    1 => return siblings.into_iter().next(),
+                    _ => return self.focus_stack.iter().find(|x| siblings.contains(x)).copied()
+                }
+            }
+        }
+        None
     }
 
     pub fn resize_client(
@@ -464,7 +558,7 @@ impl Tag {
                 let (parent_v, depth2) =
                     self.get_split_parent(node, if top { Side::Top } else { Side::Bottom });
                 let mut q = vec![];
-                if let Some(parent_) = parent_h {
+                if let Some((parent_, _)) = parent_h {
                     let parent = &mut self.nodes[parent_];
                     if let NodeContents::Node(node) = &mut parent.info {
                         let diff = delta.0 as f32 / parent.rect.width as f32;
@@ -474,7 +568,7 @@ impl Tag {
                         q.push(parent_);
                     }
                 }
-                if let Some(parent_) = parent_v {
+                if let Some((parent_, _)) = parent_v {
                     let parent = &mut self.nodes[parent_];
                     if let NodeContents::Node(node) = &mut parent.info {
                         let diff = delta.1 as f32 / parent.rect.height as f32;
@@ -488,7 +582,7 @@ impl Tag {
                     let node_ = q.pop().unwrap();
                     let node = &self.nodes[node_];
                     match &node.info {
-                        NodeContents::Node(_) => self.resize_node(aux, node_, &mut q),
+                        NodeContents::Node(_) => self.resize_node(aux, node_, &mut q, false),
                         NodeContents::Leaf(leaf) => {
                             if !node.absent {
                                 self.apply_pos_size(aux, leaf.client, &node.rect, true)?
@@ -540,7 +634,7 @@ impl Tag {
             let node_ = q.pop().unwrap();
             let node = &self.nodes[node_];
             match &node.info {
-                NodeContents::Node(..) => self.resize_node(aux, node_, &mut q),
+                NodeContents::Node(..) => self.resize_node(aux, node_, &mut q, false),
                 NodeContents::Leaf(leaf) => {
                     if !node.absent {
                         self.apply_pos_size(aux, leaf.client, &node.rect, true)?
@@ -568,40 +662,27 @@ impl Tag {
             let node_ = q.pop().unwrap();
             let node = &self.nodes[node_];
             match &node.info {
-                NodeContents::Node(..) => self.resize_node(aux, node_, &mut q),
+                NodeContents::Node(..) => self.resize_node(aux, node_, &mut q, true),
                 NodeContents::Leaf(leaf) => {
-                    if !node.absent {
-                        let leaf_client = leaf.client;
-                        let floating = {
-                            if let NodeContents::Leaf(leaf) = &mut self.nodes[node_].info {
-                                leaf.floating.x = ((leaf.floating.x - self.size.x) as f32
-                                    / self.size.width as f32
-                                    * new_size.width as f32)
-                                    .round()
-                                    as i16
-                                    + new_size.x;
-                                leaf.floating.y = ((leaf.floating.y - self.size.y) as f32
-                                    / self.size.height as f32
-                                    * new_size.height as f32)
-                                    .round()
-                                    as i16
-                                    + new_size.y;
-                                leaf.floating.clone()
-                            } else {
-                                Rect::default()
-                            }
-                        };
-                        let node = &self.nodes[node_];
-                        let client = &self.clients[leaf_client];
-                        let (rect, border) = if client.flags.fullscreen {
-                            (new_size, false)
-                        } else if client.flags.floating {
-                            (&floating, true)
+                    let leaf_client = leaf.client;
+                    let floating = {
+                        if let NodeContents::Leaf(leaf) = &mut self.nodes[node_].info {
+                            leaf.floating.reposition(&self.size, new_size);
+                            leaf.floating.clone()
                         } else {
-                            (&node.rect, true)
-                        };
-                        self.apply_pos_size(aux, leaf_client, rect, border)?
-                    }
+                            Rect::default()
+                        }
+                    };
+                    let node = &self.nodes[node_];
+                    let client = &self.clients[leaf_client];
+                    let (rect, border) = if client.flags.fullscreen {
+                        (new_size, false)
+                    } else if client.flags.floating {
+                        (&floating, true)
+                    } else {
+                        (&node.rect, true)
+                    };
+                    self.apply_pos_size(aux, leaf_client, rect, border)?
                 }
                 _ => (),
             }
@@ -619,6 +700,7 @@ impl Tag {
         focus: bool,
     ) -> Result<usize> {
         let absent = client.flags.absent();
+        let hidden = client.flags.hidden;
         let client = if let Some(idx) = self.free_clients.pop() {
             self.clients[idx] = client;
             idx
@@ -641,17 +723,18 @@ impl Tag {
                 self.split_leaf(aux, 0, split, absent, client, info)?;
             }
             NodeContents::Node(..) => {
-                let leaf = parent.unwrap_or_else(|| *self.focus_stack.front().unwrap());
+                let leaf = parent.or_else(|| self.focus_stack.front().cloned()).unwrap_or_else(|| *self.hidden.back().unwrap());
                 let leaf = self.clients[leaf].node;
                 self.split_leaf(aux, leaf, split, absent, client, info)?;
             }
         }
-
-        self.clients[client].stack_pos = if focus {
-            self.focus_stack.push_front(client)
-        } else {
-            self.focus_stack.push_back(client)
-        };
+        if !hidden {
+            self.clients[client].stack_pos = if focus {
+                self.focus_stack.push_front(client)
+            } else {
+                self.focus_stack.push_back(client)
+            };
+        }
         Ok(client)
     }
 

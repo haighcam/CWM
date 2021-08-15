@@ -6,7 +6,7 @@ use x11rb::{
 };
 
 use super::{
-    node::{LeafInfo, NodeContents},
+    node::{NodeContents},
     Layer, Split, StackLayer, Tag,
 };
 use crate::connections::{Aux, SetArg};
@@ -241,10 +241,16 @@ impl Client {
 
 impl Tag {
     pub fn focus_client(&mut self, aux: &mut Aux, _client: usize) -> Result<()> {
+        if self.focused == Some(_client) {
+            return Ok(())
+        }
         let client = &self.clients[_client];
-        self.focus_stack.remove_node(client.stack_pos);
-        if let Some(client) = self.focus_stack.front() {
-            let client = &self.clients[*client];
+        if client.flags.hidden {
+            return Ok(())
+        }
+        info!("tag {} set focus {}", self.name, _client);
+        if let Some(client) = self.focused {
+            let client = &self.clients[client];
             change_window_attributes(
                 &aux.dpy,
                 client.frame,
@@ -253,6 +259,8 @@ impl Tag {
             .context(crate::code_loc!())?;
         }
         let client = &mut self.clients[_client];
+        self.focus_stack.remove_node(client.stack_pos);
+        self.focused.replace(_client);
         client.stack_pos = self.focus_stack.push_front(_client);
         set_input_focus(&aux.dpy, InputFocus::PARENT, client.win, CURRENT_TIME)
             .context(crate::code_loc!())?;
@@ -301,6 +309,26 @@ impl Tag {
         Ok(())
     }
 
+    pub fn set_hidden(&mut self, aux: &mut Aux, client_: usize, arg: &SetArg<bool>) -> Result<()> {
+        let client = &mut self.clients[client_];
+        if arg.apply(&mut client.flags.hidden) {
+            if client.flags.hidden {
+                client.hide(aux)?;
+                self.focus_stack.remove_node(client.stack_pos);
+                self.set_focus(aux)?;
+                self.hidden.push_back(client_);
+                self.set_absent(aux, client_, true)?;
+            } else {
+                client.show(aux)?;
+                client.stack_pos = self.focus_stack.push_back(client_);
+                let absent = client.flags.absent();
+                self.hidden.retain(|x| *x != client_);
+                self.set_absent(aux, client_, absent)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn set_stack_layer(
         &mut self,
         aux: &Aux,
@@ -315,16 +343,46 @@ impl Tag {
         Ok(())
     }
 
-    pub fn set_sticky(&mut self, client: usize, arg: &SetArg<bool>) {
-        arg.apply(&mut self.clients[client].flags.sticky);
-    }
-
     pub fn set_focus(&mut self, aux: &mut Aux) -> Result<()> {
+        info!("tag {} setting focus", self.name);
         if let Some(client) = self.focus_stack.front() {
             self.focus_client(aux, *client)?;
         } else {
             set_input_focus(&aux.dpy, InputFocus::POINTER_ROOT, aux.root, CURRENT_TIME)?;
             self.set_active_window(None, &mut aux.hooks);
+            self.focused.take();
+        }
+        Ok(())
+    }
+
+    pub fn unset_focus(&mut self, aux: &Aux) -> Result<()> {
+        if let Some(client) = self.focused.take() {
+            let client = &self.clients[client];
+            change_window_attributes(
+                &aux.dpy,
+                client.frame,
+                &ChangeWindowAttributesAux::new().border_pixel(aux.theme.border_color_unfocused),
+            )
+            .context(crate::code_loc!())?;
+        }
+        Ok(())
+    }
+
+    pub fn cycle(&mut self, aux: &mut Aux, rev: bool) -> Result<()> {
+        if self.focus_stack.len() >= 2 {
+            let client_ = if rev {
+                *self.focus_stack.back().unwrap()
+            } else {
+                *self.focus_stack.front().unwrap()
+            };
+            let client = &mut self.clients[client_];
+            self.focus_stack.remove_node(client.stack_pos);
+            client.stack_pos = if rev {
+                self.focus_stack.push_front(client_)
+            } else {
+                self.focus_stack.push_back(client_)
+            };
+            self.set_focus(aux)?;
         }
         Ok(())
     }
@@ -338,11 +396,15 @@ impl WindowManager {
             let client = &mut tag.clients[client];
             let (layer, layer_pos) = client.layer_pos;
             tag.layers[layer].remove(layer_pos);
-            tag.focus_stack.remove_node(client.stack_pos);
+            if !client.flags.hidden {
+                tag.focus_stack.remove_node(client.stack_pos);
+            }
             client.flags.hidden = true;
             (client.win, client.frame, client.node)
         };
-        tag.set_focus(&mut self.aux)?;
+        if tag.id == self.monitors.get(&self.focused_monitor).unwrap().focused_tag {
+            tag.set_focus(&mut self.aux)?;
+        }
         self.windows.remove(&win);
         self.windows.remove(&frame);
         if node != 0 {
@@ -577,7 +639,7 @@ impl WindowManager {
         Ok(())
     }
 
-    pub fn move_client(&mut self, tag: Atom, client: usize, set_dest: SetArg<Atom>) -> Result<()> {
+    pub fn move_client(&mut self, tag: Atom, client: usize, set_dest: SetArg<Atom>) -> Result<usize> {
         let mut dest = tag;
         if let Some(mon) = self.tags.get(&tag).and_then(|tag| tag.monitor) {
             let prev = self.monitors.get(&mon).unwrap().prev_tag;
@@ -586,22 +648,21 @@ impl WindowManager {
             dest = set_dest.0;
         }
         if tag == dest {
-            return Ok(());
+            return Ok(client);
         }
         info!(
             "Moving client, src {}, dst: {}, client: {}",
             tag, dest, client
         );
-        let (client_, info, focus) = {
-            let hide = tag == self.focused_tag();
+        let (client_, mut info, focus, old_size) = {
             let tag = self.tags.get_mut(&tag).unwrap();
             let focus = Some(client) == tag.focused_client();
             let client = &mut tag.clients[client];
-            if hide {
+            if tag.monitor.is_none() {
                 client.hide(&self.aux)?;
             }
             let node = &tag.nodes[client.node];
-            (client.clone(), node.info.clone(), focus)
+            (client.clone(), node.info.clone(), focus, tag.size.clone())
         };
         self.remove_client(tag, client)?;
         let show = dest == self.focused_tag();
@@ -609,21 +670,24 @@ impl WindowManager {
         let frame = client_.frame;
         let win = client_.win;
         let tag = self.tags.get_mut(&dest).unwrap();
+        if let NodeContents::Leaf(leaf) = &mut info {
+            leaf.floating.reposition(&old_size, &tag.size);
+        }
         let client = tag.add_client(&self.aux, client_, None, info, None, focus)?;
         tag.set_layer(&self.aux, client, focus)?;
         if show {
             tag.clients[client].show(&self.aux)?;
-        }
-        if !hidden && focus {
-            tag.focus_client(&mut self.aux, client)?
-        } else {
-            change_window_attributes(
-                &self.aux.dpy,
-                frame,
-                &ChangeWindowAttributesAux::new()
-                    .border_pixel(self.aux.theme.border_color_unfocused),
-            )
-            .context(crate::code_loc!())?;
+            if !hidden && focus && tag.id == self.monitors.get(&self.focused_monitor).unwrap().focused_tag {
+                tag.focus_client(&mut self.aux, client)?
+            } else {
+                change_window_attributes(
+                    &self.aux.dpy,
+                    frame,
+                    &ChangeWindowAttributesAux::new()
+                        .border_pixel(self.aux.theme.border_color_unfocused),
+                )
+                .context(crate::code_loc!())?;
+            }
         }
         self.aux.dpy.flush().context(crate::code_loc!())?;
         self.windows
@@ -633,7 +697,7 @@ impl WindowManager {
         self.aux
             .hooks
             .tag_update(&self.tags, &self.tag_order, self.focused_monitor);
-        Ok(())
+        Ok(client)
     }
 
     pub fn client_property(&mut self, tag: Atom, client_: usize, atom: Atom) {

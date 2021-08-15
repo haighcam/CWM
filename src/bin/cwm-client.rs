@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use cwm::connections::{ClientRequest, CwmResponse, SetArg, Stream, TagSelection, SOCKET};
+use cwm::connections::{ClientRequest, CwmResponse, SetArg, Stream, TagSelection, SOCKET, HiddenSelection, Side};
 use nix::poll::{poll, PollFd, PollFlags};
 use simplelog::*;
 use std::env::{args, Args};
@@ -14,11 +14,11 @@ fn get_mon(args: &mut Args) -> Result<Option<u32>> {
                 if let Ok(node) = item.parse() {
                     Ok(Some(node))
                 } else {
-                    bail!("invalid node id '{}'", item)
+                    bail!("invalid mon id '{}'", item)
                 }
             }
         },
-        _ => bail!("node id or -f must be specified"),
+        _ => bail!("mon id or -f must be specified"),
     }
 }
 
@@ -32,11 +32,11 @@ fn get_tag_(args: &mut Args, allow_toggle: bool) -> Result<(bool, String)> {
         }
         Ok((toggle, item.split_off(start)))
     } else {
-        bail!("mon: No argument provided")
+        bail!("tag: No argument provided")
     }
 }
 
-pub fn get_tag(args: &mut Args, allow_toggle: bool) -> Result<(TagSelection, bool)> {
+fn get_tag(args: &mut Args, allow_toggle: bool) -> Result<(TagSelection, bool)> {
     match args.next() {
         Some(item) => match (item.as_str(), allow_toggle) {
             ("index", _) => {
@@ -47,11 +47,24 @@ pub fn get_tag(args: &mut Args, allow_toggle: bool) -> Result<(TagSelection, boo
                 let (toggle, name) = get_tag_(args, allow_toggle)?;
                 Ok((TagSelection::Name(name), toggle))
             }
-            ("~focused", true) => Ok((TagSelection::Focused(None), true)),
-            ("focused", _) => Ok((TagSelection::Focused(None), false)),
-            _ => bail!("mon: unknown argument '{}'", item),
+            ("~focused", true) | ("-~f", true) => Ok((TagSelection::Focused(None), true)),
+            ("focused", _) | ("-f", _) => Ok((TagSelection::Focused(None), false)),
+            _ => bail!("tag: unknown argument '{}'", item),
         },
-        _ => bail!("mon: No arguments provided"),
+        _ => bail!("tag: No arguments provided"),
+    }
+}
+
+fn get_side(args: &mut Args) -> Result<Side> {
+    match args.next() {
+        Some(item) => match item.as_str() {
+            "left" => Ok(Side::Left),
+            "right" => Ok(Side::Right),
+            "top" => Ok(Side::Top),
+            "bottom" => Ok(Side::Bottom),
+            _ => bail!("invalid side: {}", item)
+        },
+        _ => bail!("side: No arguments provided"),
     }
 }
 
@@ -71,7 +84,12 @@ mod node {
                 "set" => set(args, stream),
                 "kill" => kill(args, stream),
                 "close" => close(args, stream),
+                "move-tag" => move_tag(args, stream),
+                "cycle" => cycle(args, stream, false),
+                "!cycle" => cycle(args, stream, true),
+                "select" => select(args, stream),
                 "move" => move_(args, stream),
+                "resize" => resize(args, stream),
                 _ => bail!("subscribe: unknown argument '{}'", item),
             },
             _ => bail!("subscribe: No arguments provided"),
@@ -147,17 +165,68 @@ mod node {
         stream.send_value(&ClientRequest::CloseClient(node, false))
     }
 
-    fn move_(mut args: Args, mut stream: ClientStream) -> Result<()> {
+    fn move_tag(mut args: Args, mut stream: ClientStream) -> Result<()> {
         let node = get_node(&mut args)?;
         let (tag, toggle) = monitor::get_tag(&mut args, true)?;
         stream.send_value(&ClientRequest::SetWindowTag(node, tag, toggle))
+    }
+
+    fn cycle(_args: Args, mut stream: ClientStream, rev: bool) -> Result<()> {
+        stream.send_value(&ClientRequest::CycleWindow(rev))
+    }
+
+    fn select(mut args: Args, mut stream: ClientStream) -> Result<()> {
+        let node = get_node(&mut args)?;
+        let side = get_side(&mut args)?;
+        stream.send_value(&ClientRequest::SelectNeighbour(node, side))
+    }
+
+    fn move_(mut args: Args, mut stream: ClientStream) -> Result<()> {
+        let node = get_node(&mut args)?;
+        let side = get_side(&mut args)?;
+        let amt = match args.next() {
+            Some(item) => item.parse()?,
+            _ => bail!("node: No arguments provided"),
+        };
+        stream.send_value(&ClientRequest::MoveWindow(node, side, amt))
+    }
+
+    fn resize(mut args: Args, mut stream: ClientStream) -> Result<()> {
+        let node = get_node(&mut args)?;
+        let side = get_side(&mut args)?;
+        let amt = match args.next() {
+            Some(item) => item.parse()?,
+            _ => bail!("node: No arguments provided"),
+        };
+        stream.send_value(&ClientRequest::ResizeWindow(node, side, amt))
     }
 }
 
 mod tag {
     use super::*;
-    pub(super) fn process(_args: Args, _stream: ClientStream) -> Result<()> {
-        Ok(())
+    pub(super) fn process(mut args: Args, stream: ClientStream) -> Result<()> {
+        match args.next() {
+            Some(item) => match item.as_str() {
+                "show" => show(args, stream),
+                _ => bail!("tag: unknown argument '{}'", item),
+            },
+            _ => bail!("tag: No arguments provided"),
+        }
+    }
+
+    fn show(mut args: Args, mut stream: ClientStream) -> Result<()> {
+        let tag = get_tag(&mut args, false)?.0;
+        let selection;
+        match args.next() {
+            Some(item) => match item.as_str() {
+                "first" => selection = HiddenSelection::First,
+                "last" => selection = HiddenSelection::Last,
+                "all" => selection = HiddenSelection::All,
+                _ => bail!("tag: unknown argument '{}'", item),
+            },
+            _ => bail!("tag: No arguments provided"),
+        }
+        stream.send_value(&ClientRequest::Show(tag, selection))
     }
 }
 
@@ -269,15 +338,16 @@ mod subscribe {
     }
 }
 
-mod qurery {
+mod query {
     use super::*;
     pub(super) fn process(mut args: Args, stream: ClientStream) -> Result<()> {
         match args.next() {
             Some(item) => match item.as_str() {
                 "focused" => focused(args, stream),
-                _ => bail!("subscribe: unknown argument '{}'", item),
+                "name" => name(args, stream),
+                _ => bail!("query: unknown argument '{}'", item),
             },
-            _ => bail!("subscribe: No arguments provided"),
+            _ => bail!("query: No arguments provided"),
         }
     }
 
@@ -287,9 +357,9 @@ mod qurery {
                 "mon" => focused_mon(args, stream),
                 "tag" => focused_tag(args, stream),
                 "node" => focused_node(args, stream),
-                _ => bail!("subscribe: unknown argument '{}'", item),
+                _ => bail!("query: unknown argument '{}'", item),
             },
-            _ => bail!("subscribe: No arguments provided"),
+            _ => bail!("query: No arguments provided"),
         }
     }
 
@@ -329,6 +399,28 @@ mod qurery {
             let (mut done, response) = stream.get_value()?;
             if let CwmResponse::FocusedWindow(win) = response {
                 println!("{}", win.unwrap_or(0));
+                done = true;
+            }
+            if done {
+                return Ok(());
+            }
+        }
+    }
+
+    fn name(mut args: Args, mut stream: ClientStream) -> Result<()> {
+        let request = match args.next() {
+            Some(item) => match item.as_str() {
+                "mon" => ClientRequest::MonitorName(get_mon(&mut args)?),
+                "tag" => ClientRequest::TagName(get_tag(&mut args, false)?.0),
+                _ => bail!("query: unknown argument '{}'", item),
+            },
+            _ => bail!("query: No arguments provided"),
+        };
+        stream.send_value(&request)?;
+        loop {
+            let (mut done, response) = stream.get_value()?;
+            if let CwmResponse::Name(name) = response {
+                println!("{}", name);
                 done = true;
             }
             if done {
@@ -398,7 +490,7 @@ fn main() -> Result<()> {
             "monitor" | "mon" => monitor::process(args, stream),
             "subscribe" | "sub" => subscribe::process(args, stream),
             "command" | "cmd" => command::process(args, stream),
-            "query" => qurery::process(args, stream),
+            "query" => query::process(args, stream),
             _ => bail!("unknown argument '{}'", item),
         },
         _ => bail!("uo arguments provided"),

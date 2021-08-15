@@ -159,21 +159,7 @@ impl WindowManager {
             wm.add_tag(tag)?;
         }
 
-        let mut primary = None;
-        for (i, monitor) in monitors.monitors.into_iter().enumerate() {
-            if monitor.primary {
-                primary.replace(monitor.name);
-            }
-            info!("addng monitor {:?}", monitor);
-            let mon = wm.add_monitor(None, monitor)?;
-            if i == 0 {
-                wm.focused_monitor = mon;
-                wm.prev_monitor = mon;
-            }
-        }
-        if let Some(mon) = primary {
-            wm.focused_monitor = mon;
-        }
+        wm.update_monitors()?;
 
         Ok(wm)
     }
