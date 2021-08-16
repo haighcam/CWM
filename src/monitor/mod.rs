@@ -120,7 +120,7 @@ impl WindowManager {
             .or_else(|| pop_set(&mut self.free_tags, &self.tag_order))
             .unwrap_or_else(|| self.temp_tag());
         self.monitors.insert(id, monitor);
-//        self.focused_monitor = id;
+        //        self.focused_monitor = id;
         self.set_monitor_tag(id, tag)?;
         let monitor = self.monitors.get_mut(&id).unwrap();
         monitor.prev_tag = tag;
@@ -179,12 +179,25 @@ impl WindowManager {
         if let Some(old_mon) = self.tags.get(&tag).unwrap().monitor {
             self.tags.get_mut(&tag).unwrap().hide(&self.aux)?;
             if old_valid {
-                self.tags.get_mut(&old_tag).unwrap().set_monitor(&mut self.aux, self.monitors.get_mut(&old_mon).unwrap())?;
-                let mut sticky = self.monitors.get_mut(&old_mon).unwrap().sticky.drain().collect::<Vec<_>>();
+                self.tags
+                    .get_mut(&old_tag)
+                    .unwrap()
+                    .set_monitor(&mut self.aux, self.monitors.get_mut(&old_mon).unwrap())?;
+                let mut sticky = self
+                    .monitors
+                    .get_mut(&old_mon)
+                    .unwrap()
+                    .sticky
+                    .drain()
+                    .collect::<Vec<_>>();
                 for client in sticky.iter_mut() {
                     *client = self.move_client(tag, *client, SetArg(old_tag, false))?
                 }
-                self.monitors.get_mut(&old_mon).unwrap().sticky.extend(sticky);
+                self.monitors
+                    .get_mut(&old_mon)
+                    .unwrap()
+                    .sticky
+                    .extend(sticky);
             }
         } else {
             self.free_tags.remove(&tag);
@@ -195,7 +208,13 @@ impl WindowManager {
             .unwrap()
             .set_monitor(&mut self.aux, self.monitors.get_mut(&mon).unwrap())?;
         if old_valid {
-            let mut sticky = self.monitors.get_mut(&mon).unwrap().sticky.drain().collect::<Vec<_>>();
+            let mut sticky = self
+                .monitors
+                .get_mut(&mon)
+                .unwrap()
+                .sticky
+                .drain()
+                .collect::<Vec<_>>();
             for client in sticky.iter_mut() {
                 *client = self.move_client(old_tag, *client, SetArg(tag, false))?
             }
@@ -287,15 +306,23 @@ impl WindowManager {
         }
     }
 
-    pub fn set_focus(&mut self, mon: Atom) -> Result<()>{
+    pub fn set_focus(&mut self, mon: Atom) -> Result<()> {
         if mon != self.focused_monitor {
             info!("focusing mon {}", mon);
-            if let Some(tag) = self.monitors.get(&self.focused_monitor).map(|x| x.focused_tag) {
+            if let Some(tag) = self
+                .monitors
+                .get(&self.focused_monitor)
+                .map(|x| x.focused_tag)
+            {
                 self.tags.get_mut(&tag).unwrap().unset_focus(&self.aux)?;
                 self.prev_monitor = self.focused_monitor;
-            }            
+            }
             self.focused_monitor = mon;
-            let tag = self.monitors.get(&self.focused_monitor).unwrap().focused_tag;
+            let tag = self
+                .monitors
+                .get(&self.focused_monitor)
+                .unwrap()
+                .focused_tag;
             self.tags.get_mut(&tag).unwrap().set_focus(&mut self.aux)?;
         }
         self.aux

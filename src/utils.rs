@@ -120,17 +120,11 @@ impl Rect {
     }
 
     pub fn reposition(&mut self, old_size: &Rect, new_size: &Rect) {
-        self.x = ((self.x - old_size.x) as f32
-                / old_size.width as f32
-                * new_size.width as f32)
-                .round()
-                as i16
-                + new_size.x;
-        self.y = ((self.y - old_size.y) as f32
-            / old_size.height as f32
-            * new_size.height as f32)
-            .round()
-            as i16
+        self.x = ((self.x - old_size.x) as f32 / old_size.width as f32 * new_size.width as f32)
+            .round() as i16
+            + new_size.x;
+        self.y = ((self.y - old_size.y) as f32 / old_size.height as f32 * new_size.height as f32)
+            .round() as i16
             + new_size.y;
     }
 }
@@ -231,14 +225,14 @@ pub mod stack {
         pub fn iter(&self) -> StackIter<'_, T> {
             StackIter {
                 stack: self,
-                curr: self.head
+                curr: self.head,
             }
         }
     }
 
     pub struct StackIter<'a, T> {
         stack: &'a Stack<T>,
-        curr: Option<usize>
+        curr: Option<usize>,
     }
 
     impl<'a, T> Iterator for StackIter<'a, T> {
