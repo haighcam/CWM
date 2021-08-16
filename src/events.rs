@@ -7,8 +7,8 @@ use x11rb::{
 
 use super::config::IGNORED_MASK;
 use super::connections::SetArg;
-use super::{WindowLocation, WindowManager};
 use super::tag::NodeContents;
+use super::{WindowLocation, WindowManager};
 
 pub(crate) struct EventHandler {
     drag: DragState,
@@ -144,9 +144,18 @@ impl EventHandler {
             .reply()
             .unwrap();
         info!(
-            "Handling Client Message {}",
-            String::from_utf8(name.name).unwrap()
+            "Handling Client Message {}, {}, {:?}",
+            String::from_utf8(name.name).unwrap(),
+            e.window,
+            e.data.as_data32()
         );
+        if e.type_ == wm.aux.atoms._NET_WM_DESKTOP {
+            if let Some(WindowLocation::Client(tag, client)) = wm.windows.get(&e.window) {
+                if let Some(new_tag) = wm.tag_order.get(e.data.as_data32()[0] as usize) {
+                    wm.move_client(*tag, *client, SetArg(*new_tag, false))?;
+                }
+            }
+        }
         Ok(())
     }
     fn handle_configure_request(
@@ -277,7 +286,8 @@ impl EventHandler {
                             }
                         }
                     }
-                    self.drag.win = wm.move_client(old_tag, self.drag.win, SetArg(wm.focused_tag(), false))?;
+                    self.drag.win =
+                        wm.move_client(old_tag, self.drag.win, SetArg(wm.focused_tag(), false))?;
                 } else {
                     tag.move_client(
                         &wm.aux,

@@ -3,11 +3,10 @@ use log::info;
 use std::collections::{hash_map::Entry, HashSet, VecDeque};
 use x11rb::protocol::xproto::*;
 
-use super::{Monitor, };
+use super::Monitor;
+use crate::connections::{HiddenSelection, SetArg};
 use crate::utils::{Rect, Stack};
 use crate::{Aux, Hooks, WindowManager};
-use crate::connections::{HiddenSelection, SetArg};
-
 
 mod client;
 mod layer;
@@ -37,6 +36,7 @@ pub struct Tag {
     pub monitor: Option<Atom>,
     urgent: HashSet<usize>,
     hidden: VecDeque<usize>,
+    monocle: bool,
     temp: bool,
     bg: Option<Window>,
 }
@@ -98,16 +98,29 @@ impl Tag {
         Ok(())
     }
 
+    pub fn set_monocle(&mut self, aux: &Aux, arg: &SetArg<bool>) -> Result<()> {
+        if arg.apply(&mut self.monocle) {
+            self.resize_tiled(aux, 0, None)?;
+        }
+        Ok(())
+    }
+
     pub fn show_clients(&mut self, aux: &mut Aux, selection: HiddenSelection) -> Result<()> {
         match selection {
-            HiddenSelection::Last => if let Some(client) = self.hidden.pop_back() {
-                self.set_hidden(aux, client, &SetArg(false, false))?
-            },
-            HiddenSelection::First => if let Some(client) = self.hidden.pop_front() {
-                self.set_hidden(aux, client, &SetArg(false, false))?
-            },
-            HiddenSelection::All => for client in self.hidden.drain(..).collect::<Vec<_>>() {
-                self.set_hidden(aux, client, &SetArg(false, false))?
+            HiddenSelection::Last => {
+                if let Some(client) = self.hidden.pop_back() {
+                    self.set_hidden(aux, client, &SetArg(false, false))?
+                }
+            }
+            HiddenSelection::First => {
+                if let Some(client) = self.hidden.pop_front() {
+                    self.set_hidden(aux, client, &SetArg(false, false))?
+                }
+            }
+            HiddenSelection::All => {
+                for client in self.hidden.drain(..).collect::<Vec<_>>() {
+                    self.set_hidden(aux, client, &SetArg(false, false))?
+                }
             }
         }
         Ok(())
@@ -165,6 +178,7 @@ impl Default for Tag {
             urgent: HashSet::new(),
             hidden: VecDeque::new(),
             temp: false,
+            monocle: false,
             bg: None,
         }
     }

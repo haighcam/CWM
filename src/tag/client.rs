@@ -5,10 +5,7 @@ use x11rb::{
     COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE,
 };
 
-use super::{
-    node::{NodeContents},
-    Layer, Split, StackLayer, Tag,
-};
+use super::{node::NodeContents, Layer, Split, StackLayer, Tag};
 use crate::connections::{Aux, SetArg};
 use crate::utils::Rect;
 use crate::{WindowLocation, WindowManager};
@@ -242,11 +239,11 @@ impl Client {
 impl Tag {
     pub fn focus_client(&mut self, aux: &mut Aux, _client: usize) -> Result<()> {
         if self.focused == Some(_client) {
-            return Ok(())
+            return Ok(());
         }
         let client = &self.clients[_client];
         if client.flags.hidden {
-            return Ok(())
+            return Ok(());
         }
         info!("tag {} set focus {}", self.name, _client);
         if let Some(client) = self.focused {
@@ -382,6 +379,7 @@ impl Tag {
             } else {
                 self.focus_stack.push_back(client_)
             };
+            self.set_layer(aux, *self.focus_stack.front().unwrap(), true)?;
             self.set_focus(aux)?;
         }
         Ok(())
@@ -402,7 +400,13 @@ impl WindowManager {
             client.flags.hidden = true;
             (client.win, client.frame, client.node)
         };
-        if tag.id == self.monitors.get(&self.focused_monitor).unwrap().focused_tag {
+        if tag.id
+            == self
+                .monitors
+                .get(&self.focused_monitor)
+                .unwrap()
+                .focused_tag
+        {
             tag.set_focus(&mut self.aux)?;
         }
         self.windows.remove(&win);
@@ -574,7 +578,6 @@ impl WindowManager {
         };
 
         info!("adding client {:?}", client);
-
         let info = NodeContents::leaf(0, min_size, max_size, floating_rect);
 
         info!("currennt node state {:?}, {:?}", tag.free_nodes, tag.nodes);
@@ -628,18 +631,26 @@ impl WindowManager {
             )
             .context(crate::code_loc!())?;
         }
+        let tag = tag.id;
+        self.ewmh_set_client_tag(client, tag)?;
+
         self.aux.dpy.flush().context(crate::code_loc!())?;
         self.windows
-            .insert(frame, WindowLocation::Client(tag.id, client));
+            .insert(frame, WindowLocation::Client(tag, client));
         self.windows
-            .insert(win, WindowLocation::Client(tag.id, client));
+            .insert(win, WindowLocation::Client(tag, client));
         self.aux
             .hooks
             .tag_update(&self.tags, &self.tag_order, self.focused_monitor);
         Ok(())
     }
 
-    pub fn move_client(&mut self, tag: Atom, client: usize, set_dest: SetArg<Atom>) -> Result<usize> {
+    pub fn move_client(
+        &mut self,
+        tag: Atom,
+        client: usize,
+        set_dest: SetArg<Atom>,
+    ) -> Result<usize> {
         let mut dest = tag;
         if let Some(mon) = self.tags.get(&tag).and_then(|tag| tag.monitor) {
             let prev = self.monitors.get(&mon).unwrap().prev_tag;
@@ -654,18 +665,24 @@ impl WindowManager {
             "Moving client, src {}, dst: {}, client: {}",
             tag, dest, client
         );
-        let (client_, mut info, focus, old_size) = {
+        let (client_, mut info, focus, old_size, show) = {
+            let hide = self.tags.get(&dest).unwrap().monitor.is_none();
             let tag = self.tags.get_mut(&tag).unwrap();
             let focus = Some(client) == tag.focused_client();
             let client = &mut tag.clients[client];
-            if tag.monitor.is_none() {
+            if hide {
                 client.hide(&self.aux)?;
             }
             let node = &tag.nodes[client.node];
-            (client.clone(), node.info.clone(), focus, tag.size.clone())
+            (
+                client.clone(),
+                node.info.clone(),
+                focus,
+                tag.size.clone(),
+                tag.monitor.is_none() && !hide,
+            )
         };
         self.remove_client(tag, client)?;
-        let show = dest == self.focused_tag();
         let hidden = client_.flags.hidden;
         let frame = client_.frame;
         let win = client_.win;
@@ -677,7 +694,15 @@ impl WindowManager {
         tag.set_layer(&self.aux, client, focus)?;
         if show {
             tag.clients[client].show(&self.aux)?;
-            if !hidden && focus && tag.id == self.monitors.get(&self.focused_monitor).unwrap().focused_tag {
+            if !hidden
+                && focus
+                && tag.id
+                    == self
+                        .monitors
+                        .get(&self.focused_monitor)
+                        .unwrap()
+                        .focused_tag
+            {
                 tag.focus_client(&mut self.aux, client)?
             } else {
                 change_window_attributes(
@@ -689,11 +714,13 @@ impl WindowManager {
                 .context(crate::code_loc!())?;
             }
         }
+        let tag = tag.id;
+        self.ewmh_set_client_tag(client, tag)?;
         self.aux.dpy.flush().context(crate::code_loc!())?;
         self.windows
-            .insert(frame, WindowLocation::Client(tag.id, client));
+            .insert(frame, WindowLocation::Client(tag, client));
         self.windows
-            .insert(win, WindowLocation::Client(tag.id, client));
+            .insert(win, WindowLocation::Client(tag, client));
         self.aux
             .hooks
             .tag_update(&self.tags, &self.tag_order, self.focused_monitor);
@@ -763,5 +790,32 @@ impl WindowManager {
                 }
             }
         }
+    }
+
+    pub fn ewmh_set_client_tag(&self, client: usize, tag: Atom) -> Result<()> {
+        let tag = self.tags.get(&tag).unwrap();
+        let client = &tag.clients[client];
+        let mut tag_id = None;
+        for (i, id) in self.tag_order.iter().enumerate() {
+            if *id == tag.id {
+                tag_id = Some(i);
+                break;
+            }
+        }
+        if let Some(id) = tag_id {
+            let mut bytes: Vec<u8> = Vec::with_capacity(8);
+            (id as u32).serialize_into(&mut bytes);
+            change_property(
+                &self.aux.dpy,
+                PropMode::REPLACE,
+                client.win,
+                self.aux.atoms._NET_WM_DESKTOP,
+                AtomEnum::CARDINAL,
+                32,
+                1,
+                &bytes,
+            )?;
+        }
+        Ok(())
     }
 }

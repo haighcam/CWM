@@ -1,5 +1,8 @@
 use anyhow::{bail, Context, Result};
-use cwm::connections::{ClientRequest, CwmResponse, SetArg, Stream, TagSelection, SOCKET, HiddenSelection, Side};
+use cwm::connections::{
+    ClientRequest, CwmResponse, HiddenSelection, SetArg, Side, StackLayer, Stream, TagSelection,
+    SOCKET,
+};
 use nix::poll::{poll, PollFd, PollFlags};
 use simplelog::*;
 use std::env::{args, Args};
@@ -48,7 +51,13 @@ fn get_tag(args: &mut Args, allow_toggle: bool) -> Result<(TagSelection, bool)> 
                 Ok((TagSelection::Name(name), toggle))
             }
             ("~focused", true) | ("-~f", true) => Ok((TagSelection::Focused(None), true)),
+            ("~next", true) => Ok((TagSelection::Next(None), true)),
+            ("~prev", true) => Ok((TagSelection::Prev(None), true)),
+            ("~last", true) => Ok((TagSelection::Last(None), true)),
             ("focused", _) | ("-f", _) => Ok((TagSelection::Focused(None), false)),
+            ("next", _) => Ok((TagSelection::Next(None), false)),
+            ("prev", _) => Ok((TagSelection::Prev(None), false)),
+            ("last", _) => Ok((TagSelection::Last(None), false)),
             _ => bail!("tag: unknown argument '{}'", item),
         },
         _ => bail!("tag: No arguments provided"),
@@ -62,7 +71,7 @@ fn get_side(args: &mut Args) -> Result<Side> {
             "right" => Ok(Side::Right),
             "top" => Ok(Side::Top),
             "bottom" => Ok(Side::Bottom),
-            _ => bail!("invalid side: {}", item)
+            _ => bail!("invalid side: {}", item),
         },
         _ => bail!("side: No arguments provided"),
     }
@@ -82,6 +91,7 @@ mod node {
         match args.next() {
             Some(item) => match item.as_str() {
                 "set" => set(args, stream),
+                "set-layer" => set_layer(args, stream),
                 "kill" => kill(args, stream),
                 "close" => close(args, stream),
                 "move-tag" => move_tag(args, stream),
@@ -155,6 +165,27 @@ mod node {
         Ok(())
     }
 
+    fn set_layer(mut args: Args, mut stream: ClientStream) -> Result<()> {
+        let node = get_node(&mut args)?;
+        let args = if let Some(item) = args.next() {
+            let mut start = 0;
+            let mut toggle = false;
+            if &item[0..1] == "~" {
+                toggle = true;
+                start += 1;
+            }
+            match &item[start..] {
+                "above" => SetArg(StackLayer::Above, toggle),
+                "normal" => SetArg(StackLayer::Normal, toggle),
+                "below" => SetArg(StackLayer::Below, toggle),
+                arg => bail!("node set: unknown arg '{}'", arg),
+            }
+        } else {
+            bail!("node set-layer: missing arguments")
+        };
+        stream.send_value(&ClientRequest::SetLayer(node, args))
+    }
+
     fn kill(mut args: Args, mut stream: ClientStream) -> Result<()> {
         let node = get_node(&mut args)?;
         stream.send_value(&ClientRequest::CloseClient(node, true))
@@ -167,7 +198,7 @@ mod node {
 
     fn move_tag(mut args: Args, mut stream: ClientStream) -> Result<()> {
         let node = get_node(&mut args)?;
-        let (tag, toggle) = monitor::get_tag(&mut args, true)?;
+        let (tag, toggle) = get_tag(&mut args, true)?;
         stream.send_value(&ClientRequest::SetWindowTag(node, tag, toggle))
     }
 
@@ -208,6 +239,7 @@ mod tag {
         match args.next() {
             Some(item) => match item.as_str() {
                 "show" => show(args, stream),
+                "set" => set(args, stream),
                 _ => bail!("tag: unknown argument '{}'", item),
             },
             _ => bail!("tag: No arguments provided"),
@@ -228,6 +260,30 @@ mod tag {
         }
         stream.send_value(&ClientRequest::Show(tag, selection))
     }
+
+    fn set(mut args: Args, mut stream: ClientStream) -> Result<()> {
+        let tag = get_tag(&mut args, false)?.0;
+        let arg = if let Some(item) = args.next() {
+            let mut start = 0;
+            let mut toggle = false;
+            let mut set = true;
+            if &item[0..1] == "~" {
+                toggle = true;
+                start += 1;
+            } else if &item[0..1] == "!" {
+                set = false;
+                start += 1;
+            }
+            if &item[start..] == "monocle" {
+                SetArg(set, toggle)
+            } else {
+                bail!("tag set: unknown arg '{}'", &item[start..]);
+            }
+        } else {
+            bail!("tag set: missing arguments")
+        };
+        stream.send_value(&ClientRequest::SetMonocle(tag, arg))
+    }
 }
 
 mod monitor {
@@ -236,25 +292,6 @@ mod monitor {
         match args.next() {
             Some(item) => match item.as_str() {
                 "set-tag" => set_tag(args, stream),
-                _ => bail!("mon: unknown argument '{}'", item),
-            },
-            _ => bail!("mon: No arguments provided"),
-        }
-    }
-
-    pub fn get_tag(args: &mut Args, allow_toggle: bool) -> Result<(TagSelection, bool)> {
-        match args.next() {
-            Some(item) => match item.as_str() {
-                "index" => {
-                    let (toggle, idx) = get_tag_(args, allow_toggle)?;
-                    Ok((TagSelection::Index(idx.parse()?), toggle))
-                }
-                "name" => {
-                    let (toggle, name) = get_tag_(args, allow_toggle)?;
-                    Ok((TagSelection::Name(name), toggle))
-                }
-                "~focused" => Ok((TagSelection::Focused(None), true)),
-                "focused" => Ok((TagSelection::Focused(None), false)),
                 _ => bail!("mon: unknown argument '{}'", item),
             },
             _ => bail!("mon: No arguments provided"),

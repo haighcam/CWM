@@ -10,12 +10,11 @@ use std::time::Duration;
 use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
 
-use super::tag::{StackLayer};
-use super::{AtomCollection, WindowLocation, WindowManager};
 use crate::hooks::Hooks;
+use crate::{AtomCollection, WindowLocation, WindowManager};
 
-pub use crate::tag::Side;
 pub use crate::config::Theme;
+pub use crate::tag::{Side, StackLayer};
 
 pub const SOCKET: &str = "/tmp/cwm.sock";
 
@@ -47,7 +46,7 @@ pub enum Layout {
 pub enum HiddenSelection {
     All,
     First,
-    Last
+    Last,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -55,6 +54,9 @@ pub enum TagSelection {
     Name(String),
     Index(usize),
     Focused(Option<u32>),
+    Next(Option<u32>),
+    Prev(Option<u32>),
+    Last(Option<u32>),
     Id(u32),
 }
 
@@ -74,6 +76,7 @@ pub enum ClientRequest {
     SetFloating(Option<u32>, SetArg<bool>),
     SetSticky(Option<u32>, SetArg<bool>),
     SetHidden(Option<u32>, SetArg<bool>),
+    SetMonocle(TagSelection, SetArg<bool>),
     Show(TagSelection, HiddenSelection),
     ResizeWindow(Option<u32>, Side, i16), // +grow, -shrink
     MoveWindow(Option<u32>, Side, u16),   // floating move amnt, tiling swap neighbour
@@ -86,7 +89,7 @@ pub enum ClientRequest {
     SetWindowTag(Option<u32>, TagSelection, bool),
     FocusWindow(u32), // Somekind of visual preselection?
     TagName(TagSelection),
-    MonitorName(Option<u32>)
+    MonitorName(Option<u32>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -104,7 +107,7 @@ pub enum CwmResponse {
     FocusedMonitor(u32),
     FocusedTag(u32),
     FocusedWindow(Option<u32>),
-    Name(String)
+    Name(String),
 }
 
 impl Drop for Aux {
@@ -258,9 +261,37 @@ impl WindowManager {
                     Ok(None)
                 }
             }
-            TagSelection::Focused(mon) => {
-                Ok(self.get_monitor(mon).map(|x| self.monitors.get(&x).unwrap().focused_tag))
+            TagSelection::Focused(mon) => Ok(self
+                .get_monitor(mon)
+                .map(|x| self.monitors.get(&x).unwrap().focused_tag)),
+            TagSelection::Next(mon) => {
+                if let Some(mon) = self.get_monitor(mon) {
+                    let mon = self.monitors.get(&mon).unwrap();
+                    for (idx, id) in self.tag_order.iter().enumerate() {
+                        if *id == mon.focused_tag {
+                            return self
+                                .get_tag(TagSelection::Index((idx + 1) % self.tag_order.len()));
+                        }
+                    }
+                }
+                Ok(None)
             }
+            TagSelection::Prev(mon) => {
+                if let Some(mon) = self.get_monitor(mon) {
+                    let mon = self.monitors.get(&mon).unwrap();
+                    for (idx, id) in self.tag_order.iter().enumerate() {
+                        if *id == mon.focused_tag {
+                            return self.get_tag(TagSelection::Index(
+                                (idx + self.tag_order.len() - 1) % self.tag_order.len(),
+                            ));
+                        }
+                    }
+                }
+                Ok(None)
+            }
+            TagSelection::Last(mon) => Ok(self
+                .get_monitor(mon)
+                .map(|x| self.monitors.get(&x).unwrap().prev_tag)),
             TagSelection::Id(tag) => Ok(if self.tags.contains_key(&tag) {
                 Some(tag)
             } else {
@@ -348,10 +379,24 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
+            SetMonocle(tag, arg) => {
+                info!("Monocle {:?}", arg);
+                if let Some(tag) = self.get_tag(tag)? {
+                    self.tags
+                        .get_mut(&tag)
+                        .unwrap()
+                        .set_monocle(&self.aux, &arg)?;
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
             Show(tag, selection) => {
                 info!("Show {:?}, {:?}", tag, selection);
                 if let Some(tag) = self.get_tag(tag)? {
-                    self.tags.get_mut(&tag).unwrap().show_clients(&mut self.aux, selection)?;
+                    self.tags
+                        .get_mut(&tag)
+                        .unwrap()
+                        .show_clients(&mut self.aux, selection)?;
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
@@ -395,14 +440,14 @@ impl WindowManager {
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
-            },
+            }
             CycleWindow(rev) => {
                 let tag = self.focused_tag();
                 let tag = self.tags.get_mut(&tag).unwrap();
                 tag.cycle(&mut self.aux, rev)?;
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
-            },
+            }
             SelectNeighbour(client, side) => {
                 if let Some((tag, client)) = self.get_client(client) {
                     let tag = self.tags.get_mut(&tag).unwrap();
@@ -412,7 +457,7 @@ impl WindowManager {
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
-            },
+            }
             MoveWindow(client, side, amt) => {
                 if let Some((tag, client)) = self.get_client(client) {
                     let tag = self.tags.get_mut(&tag).unwrap();
@@ -420,23 +465,29 @@ impl WindowManager {
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
-            },
+            }
             ResizeWindow(client, side, amt) => {
                 if let Some((tag, client)) = self.get_client(client) {
                     let tag = self.tags.get_mut(&tag).unwrap();
                     let delta = side.parse_amt(amt);
-                    tag.resize_client(&self.aux, client, delta, side==Side::Left, side==Side::Top)?;
+                    tag.resize_client(
+                        &self.aux,
+                        client,
+                        delta,
+                        side == Side::Left,
+                        side == Side::Top,
+                    )?;
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
-            },
+            }
             MonitorName(mon) => {
                 if let Some(mon) = self.get_monitor(mon) {
                     stream.send(&CwmResponse::Name(
                         self.monitors.get(&mon).unwrap().name.clone(),
                     ));
                 }
-            },
+            }
             TagName(tag) => {
                 if let Some(tag) = self.get_tag(tag)? {
                     stream.send(&CwmResponse::Name(

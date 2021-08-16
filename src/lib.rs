@@ -38,6 +38,7 @@ atom_manager! {
         _NET_WM_STATE,
         _NET_WM_STATE_FULLSCREEN,
         _NET_WM_STATE_STICKY,
+        _NET_WM_DESKTOP,
         WM_STATE,
         WM_PROTOCOLS,
         WM_DELETE_WINDOW,

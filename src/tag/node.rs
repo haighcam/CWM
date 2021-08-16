@@ -22,7 +22,7 @@ impl Side {
             Left => (Split::Horizontal, true),
             Right => (Split::Horizontal, false),
             Top => (Split::Vertical, false),
-            Bottom => (Split::Vertical, false)
+            Bottom => (Split::Vertical, false),
         }
     }
 
@@ -32,7 +32,7 @@ impl Side {
             Left => (-amt, 0),
             Right => (amt, 0),
             Top => (0, -amt),
-            Bottom => (0, amt)
+            Bottom => (0, amt),
         }
     }
 }
@@ -141,7 +141,13 @@ impl Tag {
         }
     }
 
-    fn resize_node(&mut self, aux: &Aux, node: usize, to_process: &mut Vec<usize>, force_process: bool) {
+    fn resize_node(
+        &mut self,
+        aux: &Aux,
+        node: usize,
+        to_process: &mut Vec<usize>,
+        force_process: bool,
+    ) {
         if let Some((_child1, _child2)) = if let NodeContents::Node(node) = &self.nodes[node].info {
             Some((node.first_child, node.second_child))
         } else {
@@ -151,33 +157,40 @@ impl Tag {
             let (node, child1, child2) =
                 three_mut(&mut self.nodes, (node, _child1, _child2)).unwrap();
             if let NodeContents::Node(info) = &node.info {
-                match (child1.absent, child2.absent) {
-                    (true, false) => {
-                        child2.rect.copy(&node.rect);
-                        to_process.push(_child2);
-                        if force_process {
+                if self.monocle {
+                    child1.rect.copy(&self.tiling_size);
+                    child2.rect.copy(&self.tiling_size);
+                    to_process.push(_child2);
+                    to_process.push(_child1);
+                } else {
+                    match (child1.absent, child2.absent) {
+                        (true, false) => {
+                            child2.rect.copy(&node.rect);
+                            to_process.push(_child2);
+                            if force_process {
+                                to_process.push(_child1);
+                            }
+                        }
+                        (false, true) => {
+                            child1.rect.copy(&node.rect);
+                            to_process.push(_child1);
+                            if force_process {
+                                to_process.push(_child2);
+                            }
+                        }
+                        (false, false) => {
+                            node.rect.split(
+                                info.ratio,
+                                info.split == Split::Vertical,
+                                &mut child1.rect,
+                                &mut child2.rect,
+                                aux.theme.gap,
+                            );
+                            to_process.push(_child2);
                             to_process.push(_child1);
                         }
+                        _ => (),
                     }
-                    (false, true) => {
-                        child1.rect.copy(&node.rect);
-                        to_process.push(_child1);
-                        if force_process {
-                            to_process.push(_child2);
-                        }
-                    }
-                    (false, false) => {
-                        node.rect.split(
-                            info.ratio,
-                            info.split == Split::Vertical,
-                            &mut child1.rect,
-                            &mut child2.rect,
-                            aux.theme.gap,
-                        );
-                        to_process.push(_child2);
-                        to_process.push(_child1);
-                    }
-                    _ => (),
                 }
             }
         }
@@ -216,13 +229,13 @@ impl Tag {
             (
                 Node {
                     parent: Some((leaf_idx, true)),
-                    rect: Rect::default(),
+                    rect: self.tiling_size.clone(),
                     absent: leaf.absent,
                     info: leaf.info.clone(),
                 },
                 Node {
                     parent: Some((leaf_idx, false)),
-                    rect: Rect::default(),
+                    rect: self.tiling_size.clone(),
                     absent,
                     info,
                 },
@@ -247,7 +260,7 @@ impl Tag {
         // recompute child sizes of node
         if leaf_absent && !absent {
             self.propagate_absent(aux, leaf_idx)?;
-        } else if !(leaf_absent && absent) {
+        } else if !(self.monocle || (leaf_absent && absent)) {
             self.resize_node(aux, leaf_idx, &mut vec![], false);
         }
         if !leaf_absent && idx2.is_some() {
@@ -480,15 +493,21 @@ impl Tag {
                                     q.push(node.first_child);
                                     q.push(node.second_child);
                                 }
-                            },
-                            _ => ()
+                            }
+                            _ => (),
                         }
                     }
                 }
                 match siblings.len() {
                     0 => (),
                     1 => return siblings.into_iter().next(),
-                    _ => return self.focus_stack.iter().find(|x| siblings.contains(x)).copied()
+                    _ => {
+                        return self
+                            .focus_stack
+                            .iter()
+                            .find(|x| siblings.contains(x))
+                            .copied()
+                    }
                 }
             }
         }
@@ -619,13 +638,13 @@ impl Tag {
         tiling_size.height -=
             (aux.theme.gap as i16 * 2 + aux.theme.bottom_margin + aux.theme.top_margin) as u16;
         if tiling_size != self.tiling_size {
+            self.tiling_size.copy(&tiling_size);
             self.resize_tiled(aux, 0, Some(&tiling_size))?;
-            self.tiling_size = tiling_size;
         }
         Ok(())
     }
 
-    fn resize_tiled(&mut self, aux: &Aux, node: usize, size: Option<&Rect>) -> Result<()> {
+    pub fn resize_tiled(&mut self, aux: &Aux, node: usize, size: Option<&Rect>) -> Result<()> {
         if let Some(size) = size {
             self.nodes[node].rect.copy(size);
         }
@@ -723,7 +742,9 @@ impl Tag {
                 self.split_leaf(aux, 0, split, absent, client, info)?;
             }
             NodeContents::Node(..) => {
-                let leaf = parent.or_else(|| self.focus_stack.front().cloned()).unwrap_or_else(|| *self.hidden.back().unwrap());
+                let leaf = parent
+                    .or_else(|| self.focus_stack.front().cloned())
+                    .unwrap_or_else(|| *self.hidden.back().unwrap());
                 let leaf = self.clients[leaf].node;
                 self.split_leaf(aux, leaf, split, absent, client, info)?;
             }
