@@ -3,8 +3,20 @@ use x11rb::protocol::xproto::*;
 
 pub use stack::{Stack, StackElem};
 
-pub fn pop_set<T: Clone + Eq + std::hash::Hash>(set: &mut HashSet<T>, order: &[T]) -> Option<T> {
+pub fn pop_set_ord<T: Clone + Eq + std::hash::Hash>(
+    set: &mut HashSet<T>,
+    order: &[T],
+) -> Option<T> {
     if let Some(item) = order.iter().find(|x| set.contains(x)).cloned() {
+        set.remove(&item);
+        Some(item)
+    } else {
+        None
+    }
+}
+
+pub fn pop_set<T: Clone + Eq + std::hash::Hash>(set: &mut HashSet<T>) -> Option<T> {
+    if let Some(item) = set.iter().next().cloned() {
         set.remove(&item);
         Some(item)
     } else {

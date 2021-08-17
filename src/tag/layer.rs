@@ -107,7 +107,7 @@ impl Tag {
         {
             conf_aux = conf_aux.sibling(sibling).stack_mode(StackMode::ABOVE);
         }
-        configure_window(&aux.dpy, client.frame, &conf_aux).context(crate::code_loc!())?;
+        configure_window(&aux.dpy, client.frame, &conf_aux)?;
         configure_window(
             &aux.dpy,
             client.win,
@@ -117,8 +117,7 @@ impl Tag {
                 .border_width(None)
                 .stack_mode(None)
                 .sibling(None),
-        )
-        .context(crate::code_loc!())?;
+        )?;
         let client = &mut self.clients[idx];
         let (layer_pos, old) = if focus {
             self.layers[layer].push_front(idx)

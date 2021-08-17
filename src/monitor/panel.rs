@@ -63,8 +63,7 @@ impl WindowManager {
                 &self.aux.dpy,
                 win,
                 &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
-            )
-            .context(crate::code_loc!())?;
+            )?;
             configure_window(
                 &self.aux.dpy,
                 win,
@@ -72,7 +71,7 @@ impl WindowManager {
                     .sibling(mon.bg)
                     .stack_mode(StackMode::ABOVE),
             )?;
-            map_window(&self.aux.dpy, win).context(crate::code_loc!())?;
+            map_window(&self.aux.dpy, win)?;
         }
         self.panel_changed(mon)?;
         self.windows.insert(win, WindowLocation::Panel(mon));
@@ -90,8 +89,7 @@ impl WindowManager {
                 &self.aux.dpy,
                 win,
                 &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT),
-            )
-            .context(crate::code_loc!())?;
+            )?;
             self.panel_changed(mon)?;
         }
         Ok(())
@@ -138,10 +136,8 @@ impl WMStrut {
                 AtomEnum::CARDINAL,
                 0,
                 12,
-            )
-            .context(crate::code_loc!())?
-            .reply()
-            .context(crate::code_loc!())?;
+            )?
+            .reply()?;
             if wm_struct_partial.length != 0 {
                 let vals: Vec<u32> = wm_struct_partial.value32().unwrap().collect();
                 (vals[0], vals[1], vals[2], vals[3])
@@ -154,10 +150,8 @@ impl WMStrut {
                     AtomEnum::CARDINAL,
                     0,
                     4,
-                )
-                .context(crate::code_loc!())?
-                .reply()
-                .context(crate::code_loc!())?;
+                )?
+                .reply()?;
                 if wm_struct.length != 0 {
                     let vals: Vec<u32> = wm_struct.value32().unwrap().collect();
                     (vals[0], vals[1], vals[2], vals[3])

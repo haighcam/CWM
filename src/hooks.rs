@@ -124,7 +124,12 @@ impl Hooks {
             self.monitor_tags.1.extend(vec![
                 TagState::default();
                 tags.len() - self.monitor_tags.1.len()
-            ])
+            ]);
+            changed = true;
+        }
+        if self.monitor_tags.1.len() > tags.len() {
+            self.monitor_tags.1.drain(tags.len()..);
+            changed = true;
         }
         for (tag, state) in order
             .iter()

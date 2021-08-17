@@ -59,8 +59,9 @@ pub struct WindowManager {
     aux: Aux,
     tags: HashMap<Atom, Tag>,
     free_tags: HashSet<Atom>,
-    temp_tags: HashSet<Atom>,
+    temp_tags: Vec<Atom>,
     tag_order: Vec<Atom>,
+    free_temp: Vec<String>,
     monitors: HashMap<Atom, Monitor>,
     focused_monitor: Atom,
     prev_monitor: Atom,
@@ -85,7 +86,6 @@ impl WindowManager {
     fn new() -> Result<Self> {
         let (dpy, pref_screen) = RustConnection::connect(None).unwrap();
         let root = dpy.setup().roots[pref_screen].root;
-        let monitors_cookie = get_monitors(&dpy, root, true).context(crate::code_loc!())?;
         change_window_attributes(
             &dpy,
             root,
@@ -94,10 +94,9 @@ impl WindowManager {
                     | EventMask::SUBSTRUCTURE_NOTIFY
                     | EventMask::STRUCTURE_NOTIFY,
             ),
-        )
-        .context(crate::code_loc!())?;
-        ungrab_key(&dpy, 0, root, ModMask::ANY).context(crate::code_loc!())?;
-        ungrab_button(&dpy, ButtonIndex::ANY, root, ModMask::ANY).context(crate::code_loc!())?;
+        )?;
+        ungrab_key(&dpy, 0, root, ModMask::ANY)?;
+        ungrab_button(&dpy, ButtonIndex::ANY, root, ModMask::ANY)?;
         let event_mask: u16 = u32::from(EventMask::BUTTON_PRESS) as u16;
         for &_m in &IGNORED_MODS {
             grab_button(
@@ -111,8 +110,7 @@ impl WindowManager {
                 NONE,
                 ButtonIndex::M3,
                 u16::from(ModMask::M4) | _m,
-            )
-            .context(crate::code_loc!())?;
+            )?;
             grab_button(
                 &dpy,
                 false,
@@ -124,8 +122,7 @@ impl WindowManager {
                 NONE,
                 ButtonIndex::M1,
                 u16::from(ModMask::M4) | _m,
-            )
-            .context(crate::code_loc!())?;
+            )?;
             grab_button(
                 &dpy,
                 false,
@@ -137,29 +134,24 @@ impl WindowManager {
                 NONE,
                 ButtonIndex::M1,
                 _m,
-            )
-            .context(crate::code_loc!())?;
+            )?;
         }
 
-        dpy.flush().context(crate::code_loc!())?;
-        let monitors = monitors_cookie.reply().context(crate::code_loc!())?;
-        select_input(&dpy, root, NotifyMask::SCREEN_CHANGE).context(crate::code_loc!())?;
+        dpy.flush()?;
+        select_input(&dpy, root, NotifyMask::SCREEN_CHANGE)?;
         let mut wm = Self {
             aux: Aux::new(dpy, root)?,
             monitors: HashMap::new(),
             tags: HashMap::new(),
             free_tags: HashSet::new(),
-            temp_tags: HashSet::new(),
+            temp_tags: Vec::new(),
+            free_temp: Vec::new(),
             tag_order: Vec::new(),
             focused_monitor: 0,
             prev_monitor: 0,
             windows: HashMap::new(),
             running: true,
         };
-
-        for tag in ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"] {
-            wm.add_tag(tag)?;
-        }
 
         wm.update_monitors()?;
 
@@ -168,6 +160,7 @@ impl WindowManager {
 }
 
 pub fn run_wm() {
+    info!("CWM Starting");
     let mut wm = WindowManager::new().unwrap();
     let mut event_handler = EventHandler::new();
     wm.aux.hooks.config();
@@ -184,11 +177,5 @@ pub fn run_wm() {
         wm.handle_connections().unwrap();
         wm.aux.dpy.flush().unwrap();
     }
-}
-
-#[macro_export]
-macro_rules! code_loc {
-    () => {
-        format!("{}:{}", file!(), line!())
-    };
+    info!("CWM Stopping");
 }

@@ -5,7 +5,7 @@ use x11rb::protocol::xproto::*;
 
 use super::Monitor;
 use crate::connections::{HiddenSelection, SetArg};
-use crate::utils::{Rect, Stack};
+use crate::utils::{pop_set_ord, Rect, Stack};
 use crate::{Aux, Hooks, WindowManager};
 
 mod client;
@@ -26,7 +26,7 @@ pub struct Tag {
     nodes: Vec<Node>,
     clients: Vec<Client>,
     free_nodes: Vec<usize>,
-    free_clients: Vec<usize>,
+    free_clients: HashSet<usize>,
     focus_stack: Stack<usize>,
     layers: [Layer; Layer::COUNT * Layer::SUBCOUNT],
     pub size: Rect,
@@ -165,7 +165,7 @@ impl Default for Tag {
             }],
             clients: Vec::new(),
             free_nodes: Vec::new(),
-            free_clients: Vec::new(),
+            free_clients: HashSet::new(),
             focus_stack: Stack::default(),
             layers: [
                 Layer::Multi(Stack::default()),
@@ -200,9 +200,14 @@ impl WindowManager {
     }
 
     // when the temp tag is removed, swap its id and name with the last temp tag so that they are always in order.
-    pub fn temp_tag(&mut self) -> Atom {
-        let id = self.temp_tags.len() as Atom;
-        let name = String::new() + "temp" + &id.to_string();
+    pub fn temp_tag(&mut self) -> Result<Atom> {
+        let name = self
+            .free_temp
+            .pop()
+            .unwrap_or_else(|| String::from("temp_") + &(self.temp_tags.len()).to_string());
+        let id = intern_atom(&self.aux.dpy, false, name.as_ref())?
+            .reply()?
+            .atom;
         let tag = Tag {
             id,
             name,
@@ -210,7 +215,9 @@ impl WindowManager {
             ..Tag::default()
         };
         self.tags.insert(id, tag);
-        id
+        self.tag_order.push(id);
+        self.temp_tags.push(id);
+        Ok(id)
     }
 
     pub fn add_tag(&mut self, name: impl Into<String>) -> Result<bool> {
@@ -224,13 +231,59 @@ impl WindowManager {
             ..Tag::default()
         };
         match self.tags.entry(id) {
-            Entry::Occupied(..) => Ok(false),
+            Entry::Occupied(..) => return Ok(false),
             Entry::Vacant(entry) => {
                 entry.insert(tag);
                 self.free_tags.insert(id);
                 self.tag_order.push(id);
-                Ok(true)
             }
         }
+        if let Some(tag) = self.temp_tags.pop() {
+            self.remove_tag(tag)?
+        }
+        self.aux
+            .hooks
+            .tag_update(&self.tags, &self.tag_order, self.focused_monitor);
+        Ok(true)
+    }
+
+    pub fn remove_tag(&mut self, tag: Atom) -> Result<()> {
+        if self.free_tags.is_empty() {
+            return Ok(());
+        }
+        let mon = self.tags.get(&tag).unwrap().monitor;
+        let new_tag = if let Some(mon_) = mon {
+            let mon = self.monitors.get(&mon_).unwrap();
+            let new_tag = if mon.prev_tag != mon.focused_tag {
+                mon.prev_tag
+            } else {
+                pop_set_ord(&mut self.free_tags, &self.tag_order).unwrap()
+            };
+            self.switch_monitor_tag(mon_, SetArg(new_tag, false))?;
+            new_tag
+        } else {
+            self.monitors
+                .get(&self.focused_monitor)
+                .unwrap()
+                .focused_tag
+        };
+        for client in {
+            let tag = self.tags.get(&tag).unwrap();
+            (0..tag.clients().len())
+                .filter(|i| !tag.free_clients.contains(i))
+                .collect::<Vec<_>>()
+        } {
+            self.move_client(tag, client, SetArg(new_tag, false))?;
+        }
+        self.tag_order.retain(|id| id != &tag);
+        let tag = self.tags.remove(&tag).unwrap();
+        if tag.temp {
+            self.temp_tags.retain(|id| id != &tag.id);
+            self.free_temp.push(tag.name);
+        }
+        self.aux
+            .hooks
+            .tag_update(&self.tags, &self.tag_order, self.focused_monitor);
+        Ok(())
     }
 }

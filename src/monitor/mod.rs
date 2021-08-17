@@ -7,7 +7,7 @@ use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
 
 use super::{tag::ClientArgs, WindowLocation, WindowManager};
 use crate::connections::{Aux, SetArg};
-use crate::utils::{pop_set, Rect};
+use crate::utils::{pop_set_ord, Rect};
 
 mod desktop_window;
 mod panel;
@@ -117,8 +117,8 @@ impl WindowManager {
         };
         info!(" monitor: {:?}", monitor);
         let tag = tag
-            .or_else(|| pop_set(&mut self.free_tags, &self.tag_order))
-            .unwrap_or_else(|| self.temp_tag());
+            .or_else(|| pop_set_ord(&mut self.free_tags, &self.tag_order))
+            .map_or_else(|| self.temp_tag(), Ok)?;
         self.monitors.insert(id, monitor);
         //        self.focused_monitor = id;
         self.set_monitor_tag(id, tag)?;
@@ -240,6 +240,17 @@ impl WindowManager {
                 .unwrap()
                 .hide(&self.aux)?;
             self.free_tags.insert(mon.focused_tag);
+        }
+        if self.tags.len() > self.monitors.len() {
+            if let Some(tag) = self
+                .temp_tags
+                .iter()
+                .find(|x| self.free_tags.contains(x))
+                .or_else(|| self.temp_tags.last())
+                .cloned()
+            {
+                self.remove_tag(tag)?
+            }
         }
         Ok(())
     }

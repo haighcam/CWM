@@ -171,8 +171,7 @@ impl EventHandler {
                         &wm.aux.dpy,
                         e.window,
                         &ConfigureWindowAux::from_configure_request(&e),
-                    )
-                    .context(crate::code_loc!())?;
+                    )?;
                 }
                 _ => (),
             }
@@ -193,8 +192,7 @@ impl EventHandler {
                         .switch_layer(&wm.aux, *client)?;
                 }
             }
-            allow_events(&wm.aux.dpy, Allow::REPLAY_POINTER, CURRENT_TIME)
-                .context(crate::code_loc!())?;
+            allow_events(&wm.aux.dpy, Allow::REPLAY_POINTER, CURRENT_TIME)?;
         } else if self.drag.button == 0 {
             if let Some(WindowLocation::Client(tag, client)) = wm.windows.get(&win) {
                 self.drag.button = match e.detail {
@@ -232,8 +230,7 @@ impl EventHandler {
                         wm.aux.root,
                         NONE,
                         CURRENT_TIME,
-                    )
-                    .context(crate::code_loc!())?;
+                    )?;
                 }
             }
         }
@@ -247,10 +244,7 @@ impl EventHandler {
         info!("Handling Motion");
         let tag = wm.focused_tag();
         let tag = wm.tags.get_mut(&tag).unwrap();
-        let poin = query_pointer(&wm.aux.dpy, wm.aux.root)
-            .context(crate::code_loc!())?
-            .reply()
-            .context(crate::code_loc!())?;
+        let poin = query_pointer(&wm.aux.dpy, wm.aux.root)?.reply()?;
         match self.drag.button {
             1 => {
                 let pos = (poin.root_x, poin.root_y);
@@ -323,7 +317,7 @@ impl EventHandler {
         info!("Handling Button Release");
         if e.detail == self.drag.button {
             self.drag.button = 0;
-            ungrab_pointer(&wm.aux.dpy, CURRENT_TIME).context(crate::code_loc!())?;
+            ungrab_pointer(&wm.aux.dpy, CURRENT_TIME)?;
         }
         Ok(())
     }

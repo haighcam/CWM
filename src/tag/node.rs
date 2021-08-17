@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use super::{Client, Tag};
-use crate::utils::{three_mut, Rect};
+use crate::utils::{pop_set, three_mut, Rect};
 use crate::Aux;
 
 #[derive(PartialEq, Serialize, Deserialize, Debug, Copy, Clone)]
@@ -720,7 +720,7 @@ impl Tag {
     ) -> Result<usize> {
         let absent = client.flags.absent();
         let hidden = client.flags.hidden;
-        let client = if let Some(idx) = self.free_clients.pop() {
+        let client = if let Some(idx) = pop_set(&mut self.free_clients) {
             self.clients[idx] = client;
             idx
         } else {

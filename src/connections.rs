@@ -38,12 +38,6 @@ pub struct Stream {
     data: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-pub enum Layout {
-    Tiled,
-    Monocle,
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 pub enum HiddenSelection {
     All,
@@ -72,7 +66,6 @@ pub enum ClientRequest {
     Quit,
     Reload,
     CloseClient(Option<u32>, bool),
-    SetLayout(Option<u32>, SetArg<Layout>),
     SetLayer(Option<u32>, SetArg<StackLayer>),
     SetFullscreen(Option<u32>, SetArg<bool>),
     SetFloating(Option<u32>, SetArg<bool>),
@@ -84,12 +77,8 @@ pub enum ClientRequest {
     MoveWindow(Option<u32>, Side, u16),   // floating move amnt, tiling swap neighbour
     SelectNeighbour(Option<u32>, Side),   // select tiling neighbour
     CycleWindow(bool),
-    CycleTag(bool),
-    CycleMonitor(bool), //warp the pointer??
     FocusTag(Option<u32>, TagSelection, bool),
-    FocusMonitor(SetArg<u32>),
     SetWindowTag(Option<u32>, TagSelection, bool),
-    FocusWindow(u32), // Somekind of visual preselection?
     TagName(TagSelection),
     MonitorName(Option<u32>),
     ConfigBorderFocused(u32),
@@ -98,6 +87,8 @@ pub enum ClientRequest {
     ConfigGap(u16),
     ConfigMargin(Side, i16),
     AddRule(Rule),
+    AddTag(String),
+    RemoveTag(TagSelection),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -339,6 +330,15 @@ impl WindowManager {
             Quit => {
                 self.running = false;
                 info!("Exiting");
+            }
+            Reload => {
+                for mon in self.monitors.values() {
+                    self.aux.hooks.mon_close(mon.id, mon.name.as_str());
+                }
+                self.aux.hooks.config();
+                for mon in self.monitors.values() {
+                    self.aux.hooks.mon_open(mon.id, mon.name.as_str(), mon.bg);
+                }
             }
             SetFullscreen(client, arg) => {
                 info!("Fullscreen {:?}", arg);
@@ -592,7 +592,18 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            _ => (),
+            AddTag(tag) => {
+                self.add_tag(tag)?;
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            RemoveTag(tag) => {
+                if let Some(tag) = self.get_tag(tag)? {
+                    self.remove_tag(tag)?;
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
         }
         Ok(())
     }

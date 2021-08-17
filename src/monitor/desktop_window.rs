@@ -13,7 +13,7 @@ impl WindowManager {
             .unwrap()
             .desktop_windows
             .insert(win, DesktopWindow {});
-        map_window(&self.aux.dpy, win).context(crate::code_loc!())?;
+        map_window(&self.aux.dpy, win)?;
         self.windows.insert(win, WindowLocation::DesktopWindow(mon));
         Ok(())
     }

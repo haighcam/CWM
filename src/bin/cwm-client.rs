@@ -21,7 +21,6 @@ fn parse_u32(string: &str) -> Result<u32> {
 }
 
 struct Monitor(Option<u32>);
-
 impl Arg for Monitor {
     fn parse_args(args: &mut Vec<String>) -> Result<Self> {
         Ok(Self(
@@ -38,7 +37,6 @@ impl Arg for Monitor {
 }
 
 struct Tag(TagSelection, bool);
-
 impl Arg for Tag {
     fn parse_args(args: &mut Vec<String>) -> Result<Self> {
         let item = args
@@ -57,7 +55,7 @@ impl Arg for Tag {
                     .parse()?,
             ),
             "name" => {
-                let name = args.drain(..).fold(String::new(), |x, y| x + "." + &y);
+                let name = args.pop().unwrap_or_default();
                 if name.is_empty() {
                     bail!("tag: No argument provided")
                 }
@@ -74,7 +72,6 @@ impl Arg for Tag {
 }
 
 struct Side(Side_);
-
 impl Arg for Side {
     fn parse_args(args: &mut Vec<String>) -> Result<Self> {
         use Side_::*;
@@ -95,7 +92,6 @@ impl Arg for Side {
 }
 
 struct Node(Option<u32>);
-
 impl Arg for Node {
     fn parse_args(args: &mut Vec<String>) -> Result<Self> {
         Ok(Self(
@@ -108,68 +104,6 @@ impl Arg for Node {
                 item => Some(parse_u32(item)?),
             },
         ))
-    }
-}
-
-#[derive(Default)]
-struct NodeFlags {
-    hidden: Option<SetArg<bool>>,
-    floating: Option<SetArg<bool>>,
-    fullscreen: Option<SetArg<bool>>,
-    sticky: Option<SetArg<bool>>,
-}
-
-impl Arg for NodeFlags {
-    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
-        let mut flags = NodeFlags::default();
-        for mut item in args
-            .pop()
-            .ok_or_else(|| Error::msg("side: No argument provided"))?
-            .as_str()
-            .split('.')
-        {
-            let mut toggle = false;
-            let mut set = true;
-            if let Some(item_) = item.strip_prefix('~') {
-                toggle = true;
-                item = item_;
-            }
-            if let Some(item_) = item.strip_prefix('!') {
-                set = false;
-                item = item_;
-            }
-            match item {
-                "hidden" => flags.hidden = flags.hidden.or(Some(SetArg(set, toggle))),
-                "floating" => flags.floating = flags.floating.or(Some(SetArg(set, toggle))),
-                "fullscreen" => flags.fullscreen = flags.fullscreen.or(Some(SetArg(set, toggle))),
-                "sticky" => flags.sticky = flags.sticky.or(Some(SetArg(set, toggle))),
-                arg => bail!("node set: unknown arg '{}'", arg),
-            }
-        }
-        Ok(flags)
-    }
-}
-
-struct Layer(StackLayer, bool);
-
-impl Arg for Layer {
-    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
-        let item = args
-            .pop()
-            .ok_or_else(|| Error::msg("side: No argument provided"))?;
-        let mut s = item.as_str();
-        let mut toggle = false;
-        if let Some(s_) = s.strip_prefix('~') {
-            toggle = true;
-            s = s_;
-        }
-        let layer = match s {
-            "above" => StackLayer::Above,
-            "normal" => StackLayer::Normal,
-            "below" => StackLayer::Below,
-            arg => bail!("node set: unknown arg '{}'", arg),
-        };
-        Ok(Self(layer, toggle))
     }
 }
 
@@ -236,48 +170,67 @@ mod node {
             }
         }
     }
-}
 
-struct Show(HiddenSelection);
-
-impl Arg for Show {
-    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
-        let selection = match args
-            .pop()
-            .ok_or_else(|| Error::msg("side: No argument provided"))?
-            .as_str()
-        {
-            "first" => HiddenSelection::First,
-            "last" => HiddenSelection::Last,
-            "all" => HiddenSelection::All,
-            arg => bail!("hidden selction: unknown arg '{}'", arg),
-        };
-        Ok(Self(selection))
+    #[derive(Default)]
+    pub struct NodeFlags {
+        hidden: Option<SetArg<bool>>,
+        floating: Option<SetArg<bool>>,
+        fullscreen: Option<SetArg<bool>>,
+        sticky: Option<SetArg<bool>>,
     }
-}
+    impl Arg for NodeFlags {
+        fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+            let mut flags = NodeFlags::default();
+            for mut item in args
+                .pop()
+                .ok_or_else(|| Error::msg("flags: No argument provided"))?
+                .as_str()
+                .split('.')
+            {
+                let mut toggle = false;
+                let mut set = true;
+                if let Some(item_) = item.strip_prefix('~') {
+                    toggle = true;
+                    item = item_;
+                }
+                if let Some(item_) = item.strip_prefix('!') {
+                    set = false;
+                    item = item_;
+                }
+                match item {
+                    "hidden" => flags.hidden = flags.hidden.or(Some(SetArg(set, toggle))),
+                    "floating" => flags.floating = flags.floating.or(Some(SetArg(set, toggle))),
+                    "fullscreen" => {
+                        flags.fullscreen = flags.fullscreen.or(Some(SetArg(set, toggle)))
+                    }
+                    "sticky" => flags.sticky = flags.sticky.or(Some(SetArg(set, toggle))),
+                    arg => bail!("node set: unknown arg '{}'", arg),
+                }
+            }
+            Ok(flags)
+        }
+    }
 
-struct TagFlags(SetArg<bool>);
-
-impl Arg for TagFlags {
-    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
-        let item = args
-            .pop()
-            .ok_or_else(|| Error::msg("side: No argument provided"))?;
-        let mut s = item.as_str();
-        let mut toggle = false;
-        let mut set = true;
-        if let Some(s_) = s.strip_prefix('~') {
-            toggle = true;
-            s = s_;
+    pub struct Layer(StackLayer, bool);
+    impl Arg for Layer {
+        fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+            let item = args
+                .pop()
+                .ok_or_else(|| Error::msg("side: No argument provided"))?;
+            let mut s = item.as_str();
+            let mut toggle = false;
+            if let Some(s_) = s.strip_prefix('~') {
+                toggle = true;
+                s = s_;
+            }
+            let layer = match s {
+                "above" => StackLayer::Above,
+                "normal" => StackLayer::Normal,
+                "below" => StackLayer::Below,
+                arg => bail!("node set: unknown arg '{}'", arg),
+            };
+            Ok(Self(layer, toggle))
         }
-        if let Some(s_) = s.strip_prefix('!') {
-            set = false;
-            s = s_;
-        }
-        if s != "monocle" {
-            bail!("tag set: unknown arg '{}'", s);
-        }
-        Ok(Self(SetArg(set, toggle)))
     }
 }
 
@@ -287,6 +240,8 @@ mod tag {
     pub(super) enum Args {
         Show(Tag, Show),
         Set(Tag, TagFlags),
+        Add(String),
+        Remove(Tag),
     }
 
     impl Args {
@@ -298,7 +253,50 @@ mod tag {
                 Self::Set(Tag(tag, _), TagFlags(arg)) => {
                     stream.send_value(&ClientRequest::SetMonocle(tag, arg))
                 }
+                Self::Add(name) => stream.send_value(&ClientRequest::AddTag(name)),
+                Self::Remove(Tag(tag, _)) => stream.send_value(&ClientRequest::RemoveTag(tag)),
             }
+        }
+    }
+
+    pub struct TagFlags(SetArg<bool>);
+    impl Arg for TagFlags {
+        fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+            let item = args
+                .pop()
+                .ok_or_else(|| Error::msg("flags: No argument provided"))?;
+            let mut s = item.as_str();
+            let mut toggle = false;
+            let mut set = true;
+            if let Some(s_) = s.strip_prefix('~') {
+                toggle = true;
+                s = s_;
+            }
+            if let Some(s_) = s.strip_prefix('!') {
+                set = false;
+                s = s_;
+            }
+            if s != "monocle" {
+                bail!("tag set: unknown arg '{}'", s);
+            }
+            Ok(Self(SetArg(set, toggle)))
+        }
+    }
+
+    pub struct Show(HiddenSelection);
+    impl Arg for Show {
+        fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+            let selection = match args
+                .pop()
+                .ok_or_else(|| Error::msg("show: No argument provided"))?
+                .as_str()
+            {
+                "first" => HiddenSelection::First,
+                "last" => HiddenSelection::Last,
+                "all" => HiddenSelection::All,
+                arg => bail!("hidden selction: unknown arg '{}'", arg),
+            };
+            Ok(Self(selection))
         }
     }
 }
@@ -487,17 +485,6 @@ mod command {
     }
 }
 
-struct Color(u32);
-impl Arg for Color {
-    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
-        Ok(Self(parse_u32(
-            args.pop()
-                .ok_or_else(|| Error::msg("mon: No argument provided"))?
-                .as_str(),
-        )?))
-    }
-}
-
 mod config {
     use super::*;
     #[derive(Arg)]
@@ -510,6 +497,17 @@ mod config {
         BorderWidth(u16),
         Gap(u16),
         Margin(Side, i16),
+    }
+
+    pub struct Color(u32);
+    impl Arg for Color {
+        fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+            Ok(Self(parse_u32(
+                args.pop()
+                    .ok_or_else(|| Error::msg("mon: No argument provided"))?
+                    .as_str(),
+            )?))
+        }
     }
 
     impl Args {
@@ -618,7 +616,7 @@ struct ClientStream {
 
 impl ClientStream {
     fn new() -> Result<Self> {
-        let stream = Stream::new(UnixStream::connect(SOCKET).context(cwm::code_loc!())?);
+        let stream = Stream::new(UnixStream::connect(SOCKET)?);
         let fd = [PollFd::new(stream.as_raw_fd(), PollFlags::POLLIN)];
         Ok(Self { stream, fd })
     }
