@@ -14,6 +14,7 @@ use crate::hooks::Hooks;
 use crate::{AtomCollection, WindowLocation, WindowManager};
 
 pub use crate::config::Theme;
+pub use crate::rules::Rule;
 pub use crate::tag::{Side, StackLayer};
 
 pub const SOCKET: &str = "/tmp/cwm.sock";
@@ -27,6 +28,7 @@ pub struct Aux {
     pub theme: Theme,
     pub hooks: Hooks,
     pub atoms: AtomCollection,
+    pub rules: Vec<Rule>,
 }
 
 pub struct Stream {
@@ -62,7 +64,7 @@ pub enum TagSelection {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ClientRequest {
-    MonitorFocus(u32),
+    MonitorFocus(Option<u32>),
     TagState,
     FocusedWindow(TagSelection),
     FocusedTag(Option<u32>),
@@ -90,6 +92,12 @@ pub enum ClientRequest {
     FocusWindow(u32), // Somekind of visual preselection?
     TagName(TagSelection),
     MonitorName(Option<u32>),
+    ConfigBorderFocused(u32),
+    ConfigBorderUnfocused(u32),
+    ConfigBorderWidth(u16),
+    ConfigGap(u16),
+    ConfigMargin(Side, i16),
+    AddRule(Rule),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -152,6 +160,7 @@ impl Aux {
             theme: Theme::default(),
             hooks: Hooks::new(),
             atoms,
+            rules: Vec::new(),
         })
     }
 
@@ -309,7 +318,11 @@ impl WindowManager {
         use ClientRequest::*;
         info!("Request {:?}", request);
         match request {
-            MonitorFocus(mon) => self.aux.hooks.add_monitor_focus(mon, stream),
+            MonitorFocus(mon) => {
+                if let Some(mon) = self.get_monitor(mon) {
+                    self.aux.hooks.add_monitor_focus(mon, stream)
+                }
+            }
             TagState => self.aux.hooks.add_monitor_tag(stream),
             CloseClient(client, kill) => {
                 info!("Killing Client");
@@ -487,6 +500,8 @@ impl WindowManager {
                         self.monitors.get(&mon).unwrap().name.clone(),
                     ));
                 }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
             }
             TagName(tag) => {
                 if let Some(tag) = self.get_tag(tag)? {
@@ -494,8 +509,89 @@ impl WindowManager {
                         self.tags.get(&tag).unwrap().name.clone(),
                     ));
                 }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
             }
+            ConfigBorderFocused(color) => {
+                self.aux.theme.border_color_focused = color;
+                for mon in self.monitors.values() {
+                    let tag = self.tags.get(&mon.focused_tag).unwrap();
+                    if let Some(client) = tag.focused_client() {
+                        let client = tag.client(client);
+                        change_window_attributes(
+                            &self.aux.dpy,
+                            client.frame,
+                            &ChangeWindowAttributesAux::new()
+                                .border_pixel(self.aux.theme.border_color_focused),
+                        )?;
+                    }
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            ConfigBorderUnfocused(color) => {
+                self.aux.theme.border_color_unfocused = color;
+                for tag in self.tags.values() {
+                    let focused = tag.focused_client();
+                    for (id, client) in tag.clients().iter().enumerate() {
+                        if Some(id) != focused {
+                            change_window_attributes(
+                                &self.aux.dpy,
+                                client.frame,
+                                &ChangeWindowAttributesAux::new()
+                                    .border_pixel(self.aux.theme.border_color_unfocused),
+                            )?;
+                        }
+                    }
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            ConfigBorderWidth(width) => {
+                for tag in self.tags.values_mut() {
+                    for client in tag.clients_mut() {
+                        if client.border_width == self.aux.theme.border_width {
+                            client.border_width = width;
+                        }
+                    }
+                }
+                self.aux.theme.border_width = width;
+                for mon in self.monitors.values() {
+                    let tag = self.tags.get_mut(&mon.focused_tag).unwrap();
+                    tag.resize_all(&self.aux, &mon.free_rect(), &mon.size)?;
+                }
 
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            ConfigGap(gap) => {
+                self.aux.theme.gap = gap;
+                for mon in self.monitors.values() {
+                    let tag = self.tags.get_mut(&mon.focused_tag).unwrap();
+                    tag.resize_tiled(&self.aux, 0, Some(&mon.free_rect()))?;
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            ConfigMargin(side, marg) => {
+                match side {
+                    Side::Left => self.aux.theme.left_margin = marg,
+                    Side::Right => self.aux.theme.right_margin = marg,
+                    Side::Top => self.aux.theme.top_margin = marg,
+                    Side::Bottom => self.aux.theme.bottom_margin = marg,
+                }
+                for mon in self.monitors.values() {
+                    let tag = self.tags.get_mut(&mon.focused_tag).unwrap();
+                    tag.resize_tiled(&self.aux, 0, Some(&mon.free_rect()))?;
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            AddRule(rule) => {
+                self.aux.rules.push(rule);
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
             _ => (),
         }
         Ok(())

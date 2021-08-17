@@ -29,7 +29,7 @@ impl Default for Theme {
             window_height: 400,
             window_min_width: 60,
             window_min_height: 40,
-            border_color_focused: 0xAA006900,
+            border_color_focused: 0xAAFF0000,
             border_color_unfocused: 0xAAFFFFFF,
         }
     }

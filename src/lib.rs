@@ -22,6 +22,7 @@ pub mod connections;
 use connections::Aux;
 mod hooks;
 use hooks::Hooks;
+mod rules;
 
 atom_manager! {
     pub AtomCollection: AtomCollectionCookie {

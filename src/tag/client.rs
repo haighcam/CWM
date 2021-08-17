@@ -7,6 +7,7 @@ use x11rb::{
 
 use super::{node::NodeContents, Layer, Split, StackLayer, Tag};
 use crate::connections::{Aux, SetArg};
+use crate::rules::Rule;
 use crate::utils::Rect;
 use crate::{WindowLocation, WindowManager};
 
@@ -49,8 +50,8 @@ pub struct ClientArgs {
     pub managed: bool,
     min_size: (u16, u16),
     max_size: (u16, u16),
-    size: (u16, u16),
-    pos: Option<(i16, i16)>,
+    pub size: (u16, u16),
+    pub pos: Option<(i16, i16)>,
     layer: StackLayer,
     class: Option<String>,
     instance: Option<String>,
@@ -60,6 +61,25 @@ pub struct ClientArgs {
     parent: Option<usize>, // a leaf
     split: Option<Split>,
     protocols: ClientProtocols,
+}
+
+impl PartialEq<Rule> for ClientArgs {
+    fn eq(&self, other: &Rule) -> bool {
+        self.name
+            .as_ref()
+            .map(|x| other.name.as_ref().map(|y| x == y).unwrap_or(true))
+            .unwrap_or_else(|| other.name.is_none())
+            && self
+                .instance
+                .as_ref()
+                .map(|x| other.instance.as_ref().map(|y| x == y).unwrap_or(true))
+                .unwrap_or_else(|| other.instance.is_none())
+            && self
+                .class
+                .as_ref()
+                .map(|x| other.class.as_ref().map(|y| x == y).unwrap_or(true))
+                .unwrap_or_else(|| other.class.is_none())
+    }
 }
 
 impl ClientArgs {
@@ -513,6 +533,10 @@ impl WindowManager {
                 }
             }
         }
+
+        self.aux
+            .rules
+            .retain(|r| if args == r { !r.apply(args) } else { true });
         Ok(())
     }
 

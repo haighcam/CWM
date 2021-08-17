@@ -11,13 +11,12 @@ use crate::{Aux, Hooks, WindowManager};
 mod client;
 mod layer;
 mod node;
-use client::Client;
 use layer::Layer;
 use node::{Node, Split};
 
 pub use node::NodeContents;
 
-pub use client::ClientArgs;
+pub use client::{Client, ClientArgs, ClientFlags};
 pub use layer::StackLayer;
 pub use node::Side;
 
@@ -60,6 +59,14 @@ impl Tag {
 
     pub fn client_mut(&mut self, client: usize) -> &mut Client {
         &mut self.clients[client]
+    }
+
+    pub fn clients(&self) -> &[Client] {
+        self.clients.as_ref()
+    }
+
+    pub fn clients_mut(&mut self) -> &mut [Client] {
+        self.clients.as_mut()
     }
 
     pub fn node_mut(&mut self, node: usize) -> &mut Node {

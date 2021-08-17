@@ -14,4 +14,6 @@ x11rb = { version = "0.8.1", features = ["randr"] }
 serde = { version = "1.0", features = ["derive"] }
 bincode = "1.3.3"
 clap = "2.33.3"
+structopt = "0.3"
 anyhow = "1.0"
+struct_args = { path = "struct_args" }

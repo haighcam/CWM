@@ -1,375 +1,383 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context, Error, Result};
 use cwm::connections::{
-    ClientRequest, CwmResponse, HiddenSelection, SetArg, Side, StackLayer, Stream, TagSelection,
-    SOCKET,
+    ClientRequest, CwmResponse, HiddenSelection, Rule as Rule_, SetArg, Side as Side_, StackLayer,
+    Stream, TagSelection, SOCKET,
 };
 use nix::poll::{poll, PollFd, PollFlags};
 use simplelog::*;
-use std::env::{args, Args};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 
-fn get_mon(args: &mut Args) -> Result<Option<u32>> {
-    match args.next() {
-        Some(item) => match item.as_str() {
-            "-f" => Ok(None), // change to query focused monitor
-            item => {
-                if let Ok(node) = item.parse() {
-                    Ok(Some(node))
-                } else {
-                    bail!("invalid mon id '{}'", item)
-                }
-            }
-        },
-        _ => bail!("mon id or -f must be specified"),
-    }
-}
+use struct_args::Arg;
 
-fn get_tag_(args: &mut Args, allow_toggle: bool) -> Result<(bool, String)> {
-    if let Some(mut item) = args.next() {
-        let mut start = 0;
-        let mut toggle = false;
-        if allow_toggle && &item[0..1] == "~" {
-            toggle = true;
-            start += 1;
-        }
-        Ok((toggle, item.split_off(start)))
+fn parse_u32(string: &str) -> Result<u32> {
+    Ok(if let Some(string) = string.strip_prefix("0x") {
+        u32::from_str_radix(string, 16)?
+    } else if let Some(string) = string.strip_prefix('#') {
+        u32::from_str_radix(string, 16)?
     } else {
-        bail!("tag: No argument provided")
+        string.parse()?
+    })
+}
+
+struct Monitor(Option<u32>);
+
+impl Arg for Monitor {
+    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+        Ok(Self(
+            match args
+                .pop()
+                .ok_or_else(|| Error::msg("mon: No argument provided"))?
+                .as_str()
+            {
+                "-f" => None,
+                item => Some(parse_u32(item)?),
+            },
+        ))
     }
 }
 
-fn get_tag(args: &mut Args, allow_toggle: bool) -> Result<(TagSelection, bool)> {
-    match args.next() {
-        Some(item) => match (item.as_str(), allow_toggle) {
-            ("index", _) => {
-                let (toggle, idx) = get_tag_(args, allow_toggle)?;
-                Ok((TagSelection::Index(idx.parse()?), toggle))
+struct Tag(TagSelection, bool);
+
+impl Arg for Tag {
+    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+        let item = args
+            .pop()
+            .ok_or_else(|| Error::msg("side: No argument provided"))?;
+        let mut s = item.as_str().trim_start_matches('-');
+        let mut toggle = false;
+        if let Some(s_) = s.strip_prefix('~') {
+            toggle = true;
+            s = s_;
+        }
+        let tag = match s {
+            "index" => TagSelection::Index(
+                args.pop()
+                    .ok_or_else(|| Error::msg("tag: No argument provided"))?
+                    .parse()?,
+            ),
+            "name" => {
+                let name = args.drain(..).fold(String::new(), |x, y| x + "." + &y);
+                if name.is_empty() {
+                    bail!("tag: No argument provided")
+                }
+                TagSelection::Name(name)
             }
-            ("name", _) => {
-                let (toggle, name) = get_tag_(args, allow_toggle)?;
-                Ok((TagSelection::Name(name), toggle))
-            }
-            ("~focused", true) | ("-~f", true) => Ok((TagSelection::Focused(None), true)),
-            ("~next", true) => Ok((TagSelection::Next(None), true)),
-            ("~prev", true) => Ok((TagSelection::Prev(None), true)),
-            ("~last", true) => Ok((TagSelection::Last(None), true)),
-            ("focused", _) | ("-f", _) => Ok((TagSelection::Focused(None), false)),
-            ("next", _) => Ok((TagSelection::Next(None), false)),
-            ("prev", _) => Ok((TagSelection::Prev(None), false)),
-            ("last", _) => Ok((TagSelection::Last(None), false)),
-            _ => bail!("tag: unknown argument '{}'", item),
-        },
-        _ => bail!("tag: No arguments provided"),
+            "focused" | "f" => TagSelection::Focused(None),
+            "next" => TagSelection::Next(None),
+            "prev" => TagSelection::Prev(None),
+            "last" => TagSelection::Last(None),
+            s => bail!("unknown argument '{}'", s),
+        };
+        Ok(Self(tag, toggle))
     }
 }
 
-fn get_side(args: &mut Args) -> Result<Side> {
-    match args.next() {
-        Some(item) => match item.as_str() {
-            "left" => Ok(Side::Left),
-            "right" => Ok(Side::Right),
-            "top" => Ok(Side::Top),
-            "bottom" => Ok(Side::Bottom),
-            _ => bail!("invalid side: {}", item),
-        },
-        _ => bail!("side: No arguments provided"),
+struct Side(Side_);
+
+impl Arg for Side {
+    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+        use Side_::*;
+        Ok(Self(
+            match args
+                .pop()
+                .ok_or_else(|| Error::msg("side: No argument provided"))?
+                .as_str()
+            {
+                "left" => Left,
+                "right" => Right,
+                "top" => Top,
+                "bottom" => Bottom,
+                s => bail!("invalid side: {}", s),
+            },
+        ))
+    }
+}
+
+struct Node(Option<u32>);
+
+impl Arg for Node {
+    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+        Ok(Self(
+            match args
+                .pop()
+                .ok_or_else(|| Error::msg("mon: No argument provided"))?
+                .as_str()
+            {
+                "-f" => None,
+                item => Some(parse_u32(item)?),
+            },
+        ))
+    }
+}
+
+#[derive(Default)]
+struct NodeFlags {
+    hidden: Option<SetArg<bool>>,
+    floating: Option<SetArg<bool>>,
+    fullscreen: Option<SetArg<bool>>,
+    sticky: Option<SetArg<bool>>,
+}
+
+impl Arg for NodeFlags {
+    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+        let mut flags = NodeFlags::default();
+        for mut item in args
+            .pop()
+            .ok_or_else(|| Error::msg("side: No argument provided"))?
+            .as_str()
+            .split('.')
+        {
+            let mut toggle = false;
+            let mut set = true;
+            if let Some(item_) = item.strip_prefix('~') {
+                toggle = true;
+                item = item_;
+            }
+            if let Some(item_) = item.strip_prefix('!') {
+                set = false;
+                item = item_;
+            }
+            match item {
+                "hidden" => flags.hidden = flags.hidden.or(Some(SetArg(set, toggle))),
+                "floating" => flags.floating = flags.floating.or(Some(SetArg(set, toggle))),
+                "fullscreen" => flags.fullscreen = flags.fullscreen.or(Some(SetArg(set, toggle))),
+                "sticky" => flags.sticky = flags.sticky.or(Some(SetArg(set, toggle))),
+                arg => bail!("node set: unknown arg '{}'", arg),
+            }
+        }
+        Ok(flags)
+    }
+}
+
+struct Layer(StackLayer, bool);
+
+impl Arg for Layer {
+    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+        let item = args
+            .pop()
+            .ok_or_else(|| Error::msg("side: No argument provided"))?;
+        let mut s = item.as_str();
+        let mut toggle = false;
+        if let Some(s_) = s.strip_prefix('~') {
+            toggle = true;
+            s = s_;
+        }
+        let layer = match s {
+            "above" => StackLayer::Above,
+            "normal" => StackLayer::Normal,
+            "below" => StackLayer::Below,
+            arg => bail!("node set: unknown arg '{}'", arg),
+        };
+        Ok(Self(layer, toggle))
     }
 }
 
 mod node {
     use super::*;
-    #[derive(Default)]
-    struct NodeFlags {
-        hidden: Option<SetArg<bool>>,
-        floating: Option<SetArg<bool>>,
-        fullscreen: Option<SetArg<bool>>,
-        sticky: Option<SetArg<bool>>,
+    #[derive(Arg)]
+    pub(super) enum Args {
+        Set(Node, NodeFlags),
+        #[struct_args_match(ND, "set-layout")]
+        SetLayer(Node, Layer),
+        Kill(Node),
+        Close(Node),
+        #[struct_args_match(ND, "move-tag")]
+        MoveTag(Node, Tag),
+        Cycle,
+        #[struct_args_match(ND, "!cycle")]
+        CycleRev,
+        Select(Node, Side),
+        Move(Node, Side, u16),
+        Resize(Node, Side, i16),
     }
 
-    pub(super) fn process(mut args: Args, stream: ClientStream) -> Result<()> {
-        match args.next() {
-            Some(item) => match item.as_str() {
-                "set" => set(args, stream),
-                "set-layer" => set_layer(args, stream),
-                "kill" => kill(args, stream),
-                "close" => close(args, stream),
-                "move-tag" => move_tag(args, stream),
-                "cycle" => cycle(args, stream, false),
-                "!cycle" => cycle(args, stream, true),
-                "select" => select(args, stream),
-                "move" => move_(args, stream),
-                "resize" => resize(args, stream),
-                _ => bail!("subscribe: unknown argument '{}'", item),
-            },
-            _ => bail!("subscribe: No arguments provided"),
-        }
-    }
-
-    fn get_node(args: &mut Args) -> Result<Option<u32>> {
-        match args.next() {
-            Some(item) => match item.as_str() {
-                "-f" => Ok(None), // change to query focused monitor
-                item => {
-                    if let Ok(node) = item.parse() {
-                        Ok(Some(node))
-                    } else {
-                        bail!("invalid node id '{}'", item)
+    impl Args {
+        pub(super) fn process(self, mut stream: ClientStream) -> Result<()> {
+            match self {
+                Self::Set(Node(node), flags) => {
+                    if let Some(args) = flags.hidden {
+                        stream.send_value(&ClientRequest::SetHidden(node, args))?
                     }
-                }
-            },
-            _ => bail!("node id or -f must be specified"),
-        }
-    }
-
-    fn set(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let node = get_node(&mut args)?;
-        let mut flags = NodeFlags::default();
-        if let Some(item) = args.next() {
-            for item in item.split('.') {
-                let mut start = 0;
-                let mut toggle = false;
-                let mut set = true;
-                if &item[0..1] == "~" {
-                    toggle = true;
-                    start += 1;
-                } else if &item[0..1] == "!" {
-                    set = false;
-                    start += 1;
-                }
-                match &item[start..] {
-                    "hidden" => flags.hidden = flags.hidden.or(Some(SetArg(set, toggle))),
-                    "floating" => flags.floating = flags.floating.or(Some(SetArg(set, toggle))),
-                    "fullscreen" => {
-                        flags.fullscreen = flags.fullscreen.or(Some(SetArg(set, toggle)))
+                    if let Some(args) = flags.floating {
+                        stream.send_value(&ClientRequest::SetFloating(node, args))?
                     }
-                    "sticky" => flags.sticky = flags.sticky.or(Some(SetArg(set, toggle))),
-                    arg => bail!("node set: unknown arg '{}'", arg),
+                    if let Some(args) = flags.fullscreen {
+                        stream.send_value(&ClientRequest::SetFullscreen(node, args))?
+                    }
+                    if let Some(args) = flags.sticky {
+                        stream.send_value(&ClientRequest::SetSticky(node, args))?
+                    }
+                    Ok(())
+                }
+                Self::SetLayer(Node(node), Layer(layer, toggle)) => {
+                    stream.send_value(&ClientRequest::SetLayer(node, SetArg(layer, toggle)))
+                }
+                Self::Kill(Node(node)) => {
+                    stream.send_value(&ClientRequest::CloseClient(node, true))
+                }
+                Self::Close(Node(node)) => {
+                    stream.send_value(&ClientRequest::CloseClient(node, false))
+                }
+                Self::MoveTag(Node(node), Tag(tag, toggle)) => {
+                    stream.send_value(&ClientRequest::SetWindowTag(node, tag, toggle))
+                }
+                Self::Cycle => stream.send_value(&ClientRequest::CycleWindow(false)),
+                Self::CycleRev => stream.send_value(&ClientRequest::CycleWindow(true)),
+                Self::Select(Node(node), Side(side)) => {
+                    stream.send_value(&ClientRequest::SelectNeighbour(node, side))
+                }
+                Self::Move(Node(node), Side(side), amt) => {
+                    stream.send_value(&ClientRequest::MoveWindow(node, side, amt))
+                }
+                Self::Resize(Node(node), Side(side), amt) => {
+                    stream.send_value(&ClientRequest::ResizeWindow(node, side, amt))
                 }
             }
-        } else {
-            bail!("node set: missing arguments")
         }
-        if let Some(args) = flags.hidden {
-            stream.send_value(&ClientRequest::SetHidden(node, args))?
-        }
-        if let Some(args) = flags.floating {
-            stream.send_value(&ClientRequest::SetFloating(node, args))?
-        }
-        if let Some(args) = flags.fullscreen {
-            stream.send_value(&ClientRequest::SetFullscreen(node, args))?
-        }
-        if let Some(args) = flags.sticky {
-            stream.send_value(&ClientRequest::SetSticky(node, args))?
-        }
-        Ok(())
     }
+}
 
-    fn set_layer(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let node = get_node(&mut args)?;
-        let args = if let Some(item) = args.next() {
-            let mut start = 0;
-            let mut toggle = false;
-            if &item[0..1] == "~" {
-                toggle = true;
-                start += 1;
-            }
-            match &item[start..] {
-                "above" => SetArg(StackLayer::Above, toggle),
-                "normal" => SetArg(StackLayer::Normal, toggle),
-                "below" => SetArg(StackLayer::Below, toggle),
-                arg => bail!("node set: unknown arg '{}'", arg),
-            }
-        } else {
-            bail!("node set-layer: missing arguments")
+struct Show(HiddenSelection);
+
+impl Arg for Show {
+    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+        let selection = match args
+            .pop()
+            .ok_or_else(|| Error::msg("side: No argument provided"))?
+            .as_str()
+        {
+            "first" => HiddenSelection::First,
+            "last" => HiddenSelection::Last,
+            "all" => HiddenSelection::All,
+            arg => bail!("hidden selction: unknown arg '{}'", arg),
         };
-        stream.send_value(&ClientRequest::SetLayer(node, args))
+        Ok(Self(selection))
     }
+}
 
-    fn kill(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let node = get_node(&mut args)?;
-        stream.send_value(&ClientRequest::CloseClient(node, true))
-    }
+struct TagFlags(SetArg<bool>);
 
-    fn close(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let node = get_node(&mut args)?;
-        stream.send_value(&ClientRequest::CloseClient(node, false))
-    }
-
-    fn move_tag(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let node = get_node(&mut args)?;
-        let (tag, toggle) = get_tag(&mut args, true)?;
-        stream.send_value(&ClientRequest::SetWindowTag(node, tag, toggle))
-    }
-
-    fn cycle(_args: Args, mut stream: ClientStream, rev: bool) -> Result<()> {
-        stream.send_value(&ClientRequest::CycleWindow(rev))
-    }
-
-    fn select(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let node = get_node(&mut args)?;
-        let side = get_side(&mut args)?;
-        stream.send_value(&ClientRequest::SelectNeighbour(node, side))
-    }
-
-    fn move_(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let node = get_node(&mut args)?;
-        let side = get_side(&mut args)?;
-        let amt = match args.next() {
-            Some(item) => item.parse()?,
-            _ => bail!("node: No arguments provided"),
-        };
-        stream.send_value(&ClientRequest::MoveWindow(node, side, amt))
-    }
-
-    fn resize(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let node = get_node(&mut args)?;
-        let side = get_side(&mut args)?;
-        let amt = match args.next() {
-            Some(item) => item.parse()?,
-            _ => bail!("node: No arguments provided"),
-        };
-        stream.send_value(&ClientRequest::ResizeWindow(node, side, amt))
+impl Arg for TagFlags {
+    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+        let item = args
+            .pop()
+            .ok_or_else(|| Error::msg("side: No argument provided"))?;
+        let mut s = item.as_str();
+        let mut toggle = false;
+        let mut set = true;
+        if let Some(s_) = s.strip_prefix('~') {
+            toggle = true;
+            s = s_;
+        }
+        if let Some(s_) = s.strip_prefix('!') {
+            set = false;
+            s = s_;
+        }
+        if s != "monocle" {
+            bail!("tag set: unknown arg '{}'", s);
+        }
+        Ok(Self(SetArg(set, toggle)))
     }
 }
 
 mod tag {
     use super::*;
-    pub(super) fn process(mut args: Args, stream: ClientStream) -> Result<()> {
-        match args.next() {
-            Some(item) => match item.as_str() {
-                "show" => show(args, stream),
-                "set" => set(args, stream),
-                _ => bail!("tag: unknown argument '{}'", item),
-            },
-            _ => bail!("tag: No arguments provided"),
-        }
+    #[derive(Arg)]
+    pub(super) enum Args {
+        Show(Tag, Show),
+        Set(Tag, TagFlags),
     }
 
-    fn show(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let tag = get_tag(&mut args, false)?.0;
-        let selection;
-        match args.next() {
-            Some(item) => match item.as_str() {
-                "first" => selection = HiddenSelection::First,
-                "last" => selection = HiddenSelection::Last,
-                "all" => selection = HiddenSelection::All,
-                _ => bail!("tag: unknown argument '{}'", item),
-            },
-            _ => bail!("tag: No arguments provided"),
+    impl Args {
+        pub(super) fn process(self, mut stream: ClientStream) -> Result<()> {
+            match self {
+                Self::Show(Tag(tag, _), Show(selection)) => {
+                    stream.send_value(&ClientRequest::Show(tag, selection))
+                }
+                Self::Set(Tag(tag, _), TagFlags(arg)) => {
+                    stream.send_value(&ClientRequest::SetMonocle(tag, arg))
+                }
+            }
         }
-        stream.send_value(&ClientRequest::Show(tag, selection))
-    }
-
-    fn set(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let tag = get_tag(&mut args, false)?.0;
-        let arg = if let Some(item) = args.next() {
-            let mut start = 0;
-            let mut toggle = false;
-            let mut set = true;
-            if &item[0..1] == "~" {
-                toggle = true;
-                start += 1;
-            } else if &item[0..1] == "!" {
-                set = false;
-                start += 1;
-            }
-            if &item[start..] == "monocle" {
-                SetArg(set, toggle)
-            } else {
-                bail!("tag set: unknown arg '{}'", &item[start..]);
-            }
-        } else {
-            bail!("tag set: missing arguments")
-        };
-        stream.send_value(&ClientRequest::SetMonocle(tag, arg))
     }
 }
 
 mod monitor {
     use super::*;
-    pub(super) fn process(mut args: Args, stream: ClientStream) -> Result<()> {
-        match args.next() {
-            Some(item) => match item.as_str() {
-                "set-tag" => set_tag(args, stream),
-                _ => bail!("mon: unknown argument '{}'", item),
-            },
-            _ => bail!("mon: No arguments provided"),
-        }
+    #[derive(Arg)]
+    pub(super) enum Args {
+        #[struct_args_match(ND, "set-tag")]
+        SetTag(Monitor, Tag),
     }
 
-    fn set_tag(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let mon = get_mon(&mut args)?;
-        let (tag, toggle) = get_tag(&mut args, true)?;
-        stream.send_value(&ClientRequest::FocusTag(mon, tag, toggle))
+    impl Args {
+        pub(super) fn process(self, mut stream: ClientStream) -> Result<()> {
+            match self {
+                Self::SetTag(Monitor(mon), Tag(tag, toggle)) => {
+                    stream.send_value(&ClientRequest::FocusTag(mon, tag, toggle))
+                }
+            }
+        }
     }
 }
 
 mod subscribe {
     use super::*;
-    pub(super) fn process(mut args: Args, stream: ClientStream) -> Result<()> {
-        match args.next() {
-            Some(item) => match item.as_str() {
-                "tags" => tags(args, stream),
-                "focused" => focused(args, stream),
-                _ => bail!("subscribe: unknown argument '{}'", item),
-            },
-            _ => bail!("subscribe: No arguments provided"),
-        }
+    #[derive(Arg)]
+    pub(super) enum Args {
+        Tags(Monitor),
+        Focused(Monitor),
     }
 
-    fn get_monitor(args: &mut Args, stream: &mut ClientStream) -> Result<u32> {
-        match args.next() {
-            Some(item) => match item.as_str() {
-                "-f" => {
-                    stream.send_value(&ClientRequest::FocusedMonitor)?;
-                    let (done, response) = stream.get_value()?;
-                    if done {
-                        bail!("server hung up")
-                    } else if let CwmResponse::FocusedMonitor(mon) = response {
-                        Ok(mon)
+    impl Args {
+        pub(super) fn process(self, mut stream: ClientStream) -> Result<()> {
+            match self {
+                Self::Tags(Monitor(mon)) => {
+                    let mon = if let Some(mon) = mon {
+                        mon
                     } else {
-                        bail!("invalid response from server")
+                        stream.send_value(&ClientRequest::FocusedMonitor)?;
+                        let (done, response) = stream.get_value()?;
+                        if done {
+                            bail!("server hung up")
+                        } else if let CwmResponse::FocusedMonitor(mon) = response {
+                            mon
+                        } else {
+                            bail!("invalid response from server")
+                        }
+                    };
+                    stream.send_value(&ClientRequest::TagState)?;
+                    loop {
+                        let (done, response) = stream.get_value()?;
+                        if let CwmResponse::TagState(tags, focused_mon) = response {
+                            println!(
+                                "{}",
+                                tags.iter()
+                                    .map(|tag| tag.format(mon, focused_mon))
+                                    .reduce(|info, tag| info + "\t" + tag.as_str())
+                                    .unwrap()
+                            );
+                        }
+                        if done {
+                            return Ok(());
+                        }
                     }
-                } // change to query focused monitor
-                item => Ok(item.parse()?),
-            },
-            _ => bail!("monitor id or -f must be specified"),
-        }
-    }
-
-    fn tags(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let mon = get_monitor(&mut args, &mut stream)?;
-        stream.send_value(&ClientRequest::TagState)?;
-        loop {
-            let (done, response) = stream.get_value()?;
-            if let CwmResponse::TagState(tags, focused_mon) = response {
-                println!(
-                    "{}",
-                    tags.iter()
-                        .map(|tag| tag.format(mon, focused_mon))
-                        .reduce(|info, tag| info + "\t" + tag.as_str())
-                        .unwrap()
-                );
-            }
-            if done {
-                return Ok(());
-            }
-        }
-    }
-
-    fn focused(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let mon = get_monitor(&mut args, &mut stream)?;
-        stream.send_value(&ClientRequest::MonitorFocus(mon))?;
-        loop {
-            let (done, response) = stream.get_value()?;
-            if let CwmResponse::MonitorFocusedClient(client) = response {
-                client
-                    .map(|x| println!("{}", x))
-                    .unwrap_or_else(|| println!());
-            }
-            if done {
-                return Ok(());
+                }
+                Self::Focused(Monitor(mon)) => {
+                    stream.send_value(&ClientRequest::MonitorFocus(mon))?;
+                    loop {
+                        let (done, response) = stream.get_value()?;
+                        if let CwmResponse::MonitorFocusedClient(client) = response {
+                            client
+                                .map(|x| println!("{}", x))
+                                .unwrap_or_else(|| println!());
+                        }
+                        if done {
+                            return Ok(());
+                        }
+                    }
+                }
             }
         }
     }
@@ -377,111 +385,230 @@ mod subscribe {
 
 mod query {
     use super::*;
-    pub(super) fn process(mut args: Args, stream: ClientStream) -> Result<()> {
-        match args.next() {
-            Some(item) => match item.as_str() {
-                "focused" => focused(args, stream),
-                "name" => name(args, stream),
-                _ => bail!("query: unknown argument '{}'", item),
-            },
-            _ => bail!("query: No arguments provided"),
-        }
+    #[derive(Arg)]
+    pub(super) enum Args {
+        #[struct_args_match("-f")]
+        Focused(FocusedArgs),
+        Name(NameArgs),
     }
 
-    fn focused(mut args: Args, stream: ClientStream) -> Result<()> {
-        match args.next() {
-            Some(item) => match item.as_str() {
-                "mon" => focused_mon(args, stream),
-                "tag" => focused_tag(args, stream),
-                "node" => focused_node(args, stream),
-                _ => bail!("query: unknown argument '{}'", item),
-            },
-            _ => bail!("query: No arguments provided"),
-        }
+    #[derive(Arg)]
+    pub(super) enum FocusedArgs {
+        #[struct_args_match("mon")]
+        Monitor,
+        Tag(Monitor),
+        Node(Tag),
     }
 
-    fn focused_mon(_args: Args, mut stream: ClientStream) -> Result<()> {
-        stream.send_value(&ClientRequest::FocusedMonitor)?;
-        loop {
-            let (mut done, response) = stream.get_value()?;
-            if let CwmResponse::FocusedMonitor(mon) = response {
-                println!("{}", mon);
-                done = true;
-            }
-            if done {
-                return Ok(());
+    #[derive(Arg)]
+    pub(super) enum NameArgs {
+        #[struct_args_match("mon")]
+        Monitor(Monitor),
+        Tag(Tag),
+    }
+
+    impl Args {
+        pub(super) fn process(self, stream: ClientStream) -> Result<()> {
+            match self {
+                Self::Focused(args) => args.process(stream),
+                Self::Name(args) => args.process(stream),
             }
         }
     }
 
-    fn focused_tag(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let mon = get_mon(&mut args)?;
-        stream.send_value(&ClientRequest::FocusedTag(mon))?;
-        loop {
-            let (mut done, response) = stream.get_value()?;
-            if let CwmResponse::FocusedTag(tag) = response {
-                println!("{}", tag);
-                done = true;
+    impl FocusedArgs {
+        pub(super) fn process(self, mut stream: ClientStream) -> Result<()> {
+            match self {
+                Self::Monitor => {
+                    stream.send_value(&ClientRequest::FocusedMonitor)?;
+                    let (_, response) = stream.get_value()?;
+                    if let CwmResponse::FocusedMonitor(mon) = response {
+                        println!("{}", mon);
+                    } else {
+                        bail!("invalid response from server")
+                    }
+                }
+                Self::Tag(Monitor(mon)) => {
+                    stream.send_value(&ClientRequest::FocusedTag(mon))?;
+                    let (_, response) = stream.get_value()?;
+                    if let CwmResponse::FocusedTag(tag) = response {
+                        println!("{}", tag);
+                    } else {
+                        bail!("invalid response from server")
+                    }
+                }
+                Self::Node(Tag(tag, _)) => {
+                    stream.send_value(&ClientRequest::FocusedWindow(tag))?;
+                    let (_, response) = stream.get_value()?;
+                    if let CwmResponse::FocusedWindow(win) = response {
+                        if let Some(win) = win {
+                            println!("{}", win);
+                        }
+                    } else {
+                        bail!("invalid response from server")
+                    }
+                }
             }
-            if done {
-                return Ok(());
-            }
+            Ok(())
         }
     }
 
-    fn focused_node(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let tag = get_tag(&mut args, false)?.0;
-        stream.send_value(&ClientRequest::FocusedWindow(tag))?;
-        loop {
-            let (mut done, response) = stream.get_value()?;
-            if let CwmResponse::FocusedWindow(win) = response {
-                println!("{}", win.unwrap_or(0));
-                done = true;
-            }
-            if done {
-                return Ok(());
-            }
-        }
-    }
-
-    fn name(mut args: Args, mut stream: ClientStream) -> Result<()> {
-        let request = match args.next() {
-            Some(item) => match item.as_str() {
-                "mon" => ClientRequest::MonitorName(get_mon(&mut args)?),
-                "tag" => ClientRequest::TagName(get_tag(&mut args, false)?.0),
-                _ => bail!("query: unknown argument '{}'", item),
-            },
-            _ => bail!("query: No arguments provided"),
-        };
-        stream.send_value(&request)?;
-        loop {
-            let (mut done, response) = stream.get_value()?;
+    impl NameArgs {
+        fn process(self, mut stream: ClientStream) -> Result<()> {
+            let request = match self {
+                Self::Monitor(Monitor(mon)) => ClientRequest::MonitorName(mon),
+                Self::Tag(Tag(tag, _)) => ClientRequest::TagName(tag),
+            };
+            stream.send_value(&request)?;
+            let (_, response) = stream.get_value()?;
             if let CwmResponse::Name(name) = response {
                 println!("{}", name);
-                done = true;
+            } else {
+                bail!("invalid response from server")
             }
-            if done {
-                return Ok(());
-            }
+            Ok(())
         }
     }
 }
 
 mod command {
     use super::*;
-    pub(super) fn process(mut args: Args, stream: ClientStream) -> Result<()> {
-        match args.next() {
-            Some(item) => match item.as_str() {
-                "quit" => quit(stream),
-                _ => bail!("command: unknown argument '{}'", item),
-            },
-            _ => bail!("command: No arguments provided"),
-        }
+    #[derive(Arg)]
+    pub(super) enum Args {
+        Quit,
     }
 
-    fn quit(mut stream: ClientStream) -> Result<()> {
-        stream.send_value(&ClientRequest::Quit)
+    impl Args {
+        pub(super) fn process(self, mut stream: ClientStream) -> Result<()> {
+            match self {
+                Self::Quit => stream.send_value(&ClientRequest::Quit),
+            }
+        }
     }
+}
+
+struct Color(u32);
+impl Arg for Color {
+    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+        Ok(Self(parse_u32(
+            args.pop()
+                .ok_or_else(|| Error::msg("mon: No argument provided"))?
+                .as_str(),
+        )?))
+    }
+}
+
+mod config {
+    use super::*;
+    #[derive(Arg)]
+    pub(super) enum Args {
+        #[struct_args_match(ND, "color-focused")]
+        BorderFocused(Color),
+        #[struct_args_match(ND, "color-unfocused")]
+        BorderUnfocused(Color),
+        #[struct_args_match(ND, "border-width")]
+        BorderWidth(u16),
+        Gap(u16),
+        Margin(Side, i16),
+    }
+
+    impl Args {
+        pub(super) fn process(self, mut stream: ClientStream) -> Result<()> {
+            match self {
+                Self::BorderFocused(Color(color)) => {
+                    stream.send_value(&ClientRequest::ConfigBorderFocused(color))
+                }
+                Self::BorderUnfocused(Color(color)) => {
+                    stream.send_value(&ClientRequest::ConfigBorderUnfocused(color))
+                }
+                Self::BorderWidth(width) => {
+                    stream.send_value(&ClientRequest::ConfigBorderWidth(width))
+                }
+                Self::Gap(gap) => stream.send_value(&ClientRequest::ConfigGap(gap)),
+                Self::Margin(Side(side), marg) => {
+                    stream.send_value(&ClientRequest::ConfigMargin(side, marg))
+                }
+            }
+        }
+    }
+}
+
+struct Rule(Rule_);
+impl Arg for Rule {
+    fn parse_args(args: &mut Vec<String>) -> Result<Self> {
+        let mut rule = Rule_::new();
+        while let Some(item) = args.pop() {
+            match item.as_str() {
+                "name" => rule.name(
+                    args.pop()
+                        .ok_or_else(|| Error::msg("rule: No argument provided"))?,
+                ),
+                "class" => rule.class(
+                    args.pop()
+                        .ok_or_else(|| Error::msg("rule: No argument provided"))?,
+                ),
+                "instance" | "inst" => rule.instance(
+                    args.pop()
+                        .ok_or_else(|| Error::msg("rule: No argument provided"))?,
+                ),
+                "floating" => rule.floating(true),
+                "!floating" => rule.floating(false),
+                "pos" => rule.pos((
+                    args.pop()
+                        .ok_or_else(|| Error::msg("rule: No argument provided"))?
+                        .parse()?,
+                    args.pop()
+                        .ok_or_else(|| Error::msg("rule: No argument provided"))?
+                        .parse()?,
+                )),
+                "size" => rule.size((
+                    args.pop()
+                        .ok_or_else(|| Error::msg("rule: No argument provided"))?
+                        .parse()?,
+                    args.pop()
+                        .ok_or_else(|| Error::msg("rule: No argument provided"))?
+                        .parse()?,
+                )),
+                "temp" => rule.temp(),
+                _ => {
+                    args.push(item);
+                    break;
+                }
+            }
+        }
+        Ok(Self(rule))
+    }
+}
+
+mod rule {
+    use super::*;
+    #[derive(Arg)]
+    pub(super) enum Args {
+        Add(Rule),
+    }
+
+    impl Args {
+        pub(super) fn process(self, mut stream: ClientStream) -> Result<()> {
+            match self {
+                Self::Add(Rule(rule)) => stream.send_value(&ClientRequest::AddRule(rule)),
+            }
+        }
+    }
+}
+
+#[derive(Arg)]
+enum Opts {
+    Node(node::Args),
+    Tag(tag::Args),
+    #[struct_args_match("mon")]
+    Monitor(monitor::Args),
+    #[struct_args_match("sub")]
+    Subscribe(subscribe::Args),
+    Query(query::Args),
+    #[struct_args_match("cmd")]
+    Command(command::Args),
+    Config(config::Args),
+    Rule(rule::Args),
 }
 
 struct ClientStream {
@@ -517,19 +644,16 @@ impl ClientStream {
 
 fn main() -> Result<()> {
     SimpleLogger::init(LevelFilter::Error, Config::default()).unwrap();
+    let args = Opts::from_args()?;
     let stream = ClientStream::new()?;
-    let mut args = args();
-    args.next();
-    match args.next() {
-        Some(item) => match item.as_str() {
-            "node" => node::process(args, stream),
-            "tag" => tag::process(args, stream),
-            "monitor" | "mon" => monitor::process(args, stream),
-            "subscribe" | "sub" => subscribe::process(args, stream),
-            "command" | "cmd" => command::process(args, stream),
-            "query" => query::process(args, stream),
-            _ => bail!("unknown argument '{}'", item),
-        },
-        _ => bail!("uo arguments provided"),
+    match args {
+        Opts::Node(args) => args.process(stream),
+        Opts::Tag(args) => args.process(stream),
+        Opts::Monitor(args) => args.process(stream),
+        Opts::Subscribe(args) => args.process(stream),
+        Opts::Query(args) => args.process(stream),
+        Opts::Command(args) => args.process(stream),
+        Opts::Config(args) => args.process(stream),
+        Opts::Rule(args) => args.process(stream),
     }
 }
