@@ -12,13 +12,13 @@ mod client;
 mod layer;
 mod node;
 use layer::Layer;
-use node::{Node, Split};
+use node::Node;
 
 pub use node::NodeContents;
 
 pub use client::{Client, ClientArgs, ClientFlags};
 pub use layer::StackLayer;
-pub use node::Side;
+pub use node::{Side, Split};
 
 pub struct Tag {
     pub id: Atom,
@@ -34,6 +34,7 @@ pub struct Tag {
     focused: Option<usize>,
     pub monitor: Option<Atom>,
     urgent: HashSet<usize>,
+    psuedo_urgent: HashSet<usize>,
     hidden: VecDeque<usize>,
     monocle: bool,
     temp: bool,
@@ -46,7 +47,7 @@ impl Tag {
     }
 
     pub fn urgent(&self) -> bool {
-        !self.urgent.is_empty()
+        !(self.urgent.is_empty() && self.psuedo_urgent.is_empty())
     }
 
     pub fn focused_client(&self) -> Option<usize> {
@@ -67,6 +68,10 @@ impl Tag {
 
     pub fn clients_mut(&mut self) -> &mut [Client] {
         self.clients.as_mut()
+    }
+
+    pub fn node(&self, node: usize) -> &Node {
+        &self.nodes[node]
     }
 
     pub fn node_mut(&mut self, node: usize) -> &mut Node {
@@ -133,12 +138,12 @@ impl Tag {
         Ok(())
     }
 
-    pub fn hide(&mut self, aux: &Aux) -> Result<()> {
+    pub fn hide(&mut self, aux: &mut Aux) -> Result<()> {
         self.monitor.take();
         self.bg.take();
         for client in self.clients.iter_mut() {
             if !client.flags.sticky && !client.flags.hidden {
-                client.hide(aux)?;
+                client.hide(aux, self.id)?;
             }
         }
         self.unset_focus(aux)?;
@@ -183,6 +188,7 @@ impl Default for Tag {
             focused: None,
             monitor: None,
             urgent: HashSet::new(),
+            psuedo_urgent: HashSet::new(),
             hidden: VecDeque::new(),
             temp: false,
             monocle: false,
@@ -260,6 +266,7 @@ impl WindowManager {
                 pop_set_ord(&mut self.free_tags, &self.tag_order).unwrap()
             };
             self.switch_monitor_tag(mon_, SetArg(new_tag, false))?;
+            self.monitors.get_mut(&mon_).unwrap().prev_tag = new_tag;
             new_tag
         } else {
             self.monitors

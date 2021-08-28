@@ -1,11 +1,11 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use log::info;
 use x11rb::{
-    connection::Connection, properties::*, protocol::xproto::*, x11_utils::Serialize,
-    COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE,
+    connection::Connection, properties::*, protocol::xproto::*, wrapper::ConnectionExt as _,
+    CURRENT_TIME, NONE,
 };
 
-use super::{node::NodeContents, Layer, Split, StackLayer, Tag};
+use super::{node::NodeContents, Layer, StackLayer, Tag};
 use crate::connections::{Aux, SetArg};
 use crate::rules::Rule;
 use crate::utils::Rect;
@@ -18,6 +18,7 @@ pub struct ClientFlags {
     pub floating: bool,
     pub fullscreen: bool,
     pub sticky: bool,
+    pub psuedo_urgent: bool,
 }
 
 impl ClientFlags {
@@ -50,7 +51,7 @@ pub struct ClientArgs {
     pub managed: bool,
     min_size: (u16, u16),
     max_size: (u16, u16),
-    pub size: (u16, u16),
+    pub size: Option<(u16, u16)>,
     pub pos: Option<(i16, i16)>,
     layer: StackLayer,
     class: Option<String>,
@@ -59,7 +60,6 @@ pub struct ClientArgs {
     net_name: bool,
     tag: Option<u32>,
     parent: Option<usize>, // a leaf
-    split: Option<Split>,
     protocols: ClientProtocols,
 }
 
@@ -92,11 +92,12 @@ impl ClientArgs {
                 urgent: false,
                 sticky: false,
                 hidden: false,
+                psuedo_urgent: false,
             },
             centered: false,
             managed: true,
             min_size: (aux.theme.window_min_width, aux.theme.window_min_height),
-            size: (aux.theme.window_width, aux.theme.window_height),
+            size: None,
             max_size: (std::u16::MAX, std::u16::MAX),
             pos: None,
             class: None,
@@ -105,7 +106,6 @@ impl ClientArgs {
             instance: None,
             layer: StackLayer::Normal,
             parent: None,
-            split: None,
             tag: None,
             protocols: ClientProtocols::default(),
         }
@@ -127,13 +127,10 @@ impl ClientArgs {
         if let Some(max) = size_hints.max_size.map(|x| (x.0 as u16, x.1 as u16)) {
             self.max_size = max;
         }
-        if let Some((_, w, h)) = size_hints.size {
-            self.size = (w as u16, h as u16);
-        }
         if let Some(min) = size_hints.min_size.map(|x| (x.0 as u16, x.1 as u16)) {
             self.min_size = min;
             if self.max_size == self.min_size {
-                self.size = min;
+                self.size = Some(min);
                 self.flags.floating = true;
             }
         }
@@ -214,42 +211,31 @@ impl Client {
     }
 
     pub fn show(&self, aux: &Aux) -> Result<()> {
-        let mut bytes: Vec<u8> = Vec::with_capacity(8);
-        1u32.serialize_into(&mut bytes);
-        NONE.serialize_into(&mut bytes);
-        change_property(
-            &aux.dpy,
+        aux.dpy.change_property32(
             PropMode::REPLACE,
             self.win,
             aux.atoms.WM_STATE,
             aux.atoms.WM_STATE,
-            32,
-            2,
-            &bytes,
+            &[1, NONE],
         )?;
         map_window(&aux.dpy, self.frame)?;
         map_window(&aux.dpy, self.win)?;
         Ok(())
     }
 
-    pub fn hide(&mut self, aux: &Aux) -> Result<()> {
+    pub fn hide(&mut self, aux: &mut Aux, tag: Atom) -> Result<()> {
         info!("hiding window {} {}", self.win, self.frame);
-        let mut bytes: Vec<u8> = Vec::with_capacity(8);
         unmap_window(&aux.dpy, self.win)?;
         unmap_window(&aux.dpy, self.frame)?;
-        3u32.serialize_into(&mut bytes);
-        NONE.serialize_into(&mut bytes);
-        change_property(
-            &aux.dpy,
+        aux.dpy.change_property32(
             PropMode::REPLACE,
             self.win,
             aux.atoms.WM_STATE,
             aux.atoms.WM_STATE,
-            32,
-            2,
-            &bytes,
+            &[3, NONE],
         )?;
         self.ignore_unmaps += 2;
+        aux.selection.hide(&aux.dpy, Some(tag), Some(self.node))?;
         Ok(())
     }
 }
@@ -283,7 +269,11 @@ impl Tag {
             client.frame,
             &ChangeWindowAttributesAux::new().border_pixel(aux.theme.border_color_focused),
         )?;
+        client.flags.psuedo_urgent = false;
         let name = client.name.clone();
+        if self.psuedo_urgent.remove(&_client) {
+            aux.hooks.update_tag(self);
+        }
         self.set_active_window(name, &mut aux.hooks);
         Ok(())
     }
@@ -298,11 +288,7 @@ impl Tag {
         let client = &self.clients[client];
         let conf_aux = size.aux(if border { client.border_width } else { 0 });
         configure_window(&aux.dpy, client.frame, &conf_aux)?;
-        configure_window(
-            &aux.dpy,
-            client.win,
-            &conf_aux.x(None).y(None).border_width(None),
-        )?;
+        configure_window(&aux.dpy, client.win, &conf_aux.x(0).y(0).border_width(None))?;
         Ok(())
     }
 
@@ -324,7 +310,7 @@ impl Tag {
         let client = &mut self.clients[client_];
         if arg.apply(&mut client.flags.hidden) {
             if client.flags.hidden {
-                client.hide(aux)?;
+                client.hide(aux, self.id)?;
                 self.focus_stack.remove_node(client.stack_pos);
                 self.set_focus(aux)?;
                 self.hidden.push_back(client_);
@@ -356,8 +342,8 @@ impl Tag {
 
     pub fn set_focus(&mut self, aux: &mut Aux) -> Result<()> {
         info!("tag {} setting focus", self.name);
-        if let Some(client) = self.focus_stack.front() {
-            self.focus_client(aux, *client)?;
+        if let Some(client) = self.focus_stack.front().copied() {
+            self.focus_client(aux, client)?;
         } else {
             set_input_focus(&aux.dpy, InputFocus::POINTER_ROOT, aux.root, CURRENT_TIME)?;
             self.set_active_window(None, &mut aux.hooks);
@@ -402,6 +388,7 @@ impl Tag {
 impl WindowManager {
     pub fn remove_client(&mut self, tag: Atom, client: usize) -> Result<(Window, Window)> {
         let tag = self.tags.get_mut(&tag).unwrap();
+        tag.urgent.remove(&client);
         tag.free_clients.insert(client);
         let (win, frame, node) = {
             let client = &mut tag.clients[client];
@@ -429,13 +416,18 @@ impl WindowManager {
         } else {
             tag.nodes[0].info = NodeContents::Empty;
         }
+        self.aux
+            .selection
+            .hide(&self.aux.dpy, Some(tag.id), Some(node))?;
         Ok((win, frame))
     }
 
     pub fn unmanage_client(&mut self, tag: Atom, client: usize) -> Result<()> {
         let (win, frame) = self.remove_client(tag, client)?;
-        destroy_window(&self.aux.dpy, frame)?;
         reparent_window(&self.aux.dpy, win, self.aux.root, 0, 0)?;
+        destroy_window(&self.aux.dpy, frame)?;
+        delete_property(&self.aux.dpy, win, self.aux.atoms.WM_STATE)?;
+        delete_property(&self.aux.dpy, win, self.aux.atoms._NET_WM_STATE)?;
         self.aux
             .hooks
             .tag_update(&self.tags, &self.tag_order, self.focused_monitor);
@@ -535,16 +527,15 @@ impl WindowManager {
             managed: _,
             min_size,
             max_size,
-            mut size,
+            size,
             layer,
             class,
             instance,
             name,
             net_name,
             tag,
-            pos,
+            mut pos,
             parent,
-            split,
             protocols,
         } = args;
         let tag_idx = tag
@@ -552,6 +543,13 @@ impl WindowManager {
             .unwrap_or_else(|| self.focused_tag());
         let tag = self.tags.get_mut(&tag_idx).unwrap();
         let border_width = self.aux.theme.border_width;
+        let mut size = if let Some(size) = size {
+            size
+        } else {
+            let rect = get_geometry(&self.aux.dpy, win)?.reply()?;
+            pos.get_or_insert((rect.x, rect.y));
+            (rect.width, rect.height)
+        };
         size.0 += border_width * 2;
         size.1 += border_width * 2;
         let floating_rect = if centered || pos.is_none() {
@@ -592,17 +590,21 @@ impl WindowManager {
         let info = NodeContents::leaf(0, min_size, max_size, floating_rect);
 
         info!("currennt node state {:?}, {:?}", tag.free_nodes, tag.nodes);
-        let client = tag.add_client(&self.aux, client, parent, info, split, focus)?;
+        let client = tag.add_client(&mut self.aux, client, parent, info, focus)?;
 
-        let aux = CreateWindowAux::new().event_mask(
-            EventMask::ENTER_WINDOW
+        let aux = CreateWindowAux::new()
+            .event_mask(
+                EventMask::ENTER_WINDOW
                     | EventMask::FOCUS_CHANGE
                     // | EventMask::SUBSTRUCTURE_REDIRECT
                     | EventMask::SUBSTRUCTURE_NOTIFY,
-        );
+            )
+            .colormap(self.aux.vis.colormap())
+            .border_pixel(self.aux.theme.border_color_unfocused)
+            .background_pixel(0);
         create_window(
             &self.aux.dpy,
-            COPY_DEPTH_FROM_PARENT,
+            self.aux.vis.depth(),
             frame,
             self.aux.root,
             tag.tiling_size.x,
@@ -610,8 +612,8 @@ impl WindowManager {
             tag.tiling_size.width,
             tag.tiling_size.height,
             0,
-            WindowClass::COPY_FROM_PARENT,
-            COPY_FROM_PARENT,
+            WindowClass::INPUT_OUTPUT,
+            self.aux.vis.visualid(),
             &aux,
         )?;
         reparent_window(&self.aux.dpy, win, frame, 0, 0)?;
@@ -624,7 +626,7 @@ impl WindowManager {
         tag.set_layer(&self.aux, client, focus)?;
         if let Some(client) = tag.clients.get_mut(client) {
             if hidden {
-                client.hide(&self.aux)?
+                client.hide(&mut self.aux, tag.id)?
             } else {
                 client.show(&self.aux)?
             }
@@ -679,7 +681,7 @@ impl WindowManager {
             let focus = Some(client) == tag.focused_client();
             let client = &mut tag.clients[client];
             if hide {
-                client.hide(&self.aux)?;
+                client.hide(&mut self.aux, tag.id)?;
             }
             let node = &tag.nodes[client.node];
             (
@@ -698,7 +700,7 @@ impl WindowManager {
         if let NodeContents::Leaf(leaf) = &mut info {
             leaf.floating.reposition(&old_size, &tag.size);
         }
-        let client = tag.add_client(&self.aux, client_, None, info, None, focus)?;
+        let client = tag.add_client(&mut self.aux, client_, None, info, focus)?;
         tag.set_layer(&self.aux, client, focus)?;
         if show {
             tag.clients[client].show(&self.aux)?;
@@ -732,6 +734,32 @@ impl WindowManager {
             .hooks
             .tag_update(&self.tags, &self.tag_order, self.focused_monitor);
         Ok(client)
+    }
+
+    pub fn client_state(&mut self, tag: Atom, client_: usize, state: Atom, action: Atom) {
+        let name = get_atom_name(&self.aux.dpy, state)
+            .unwrap()
+            .reply()
+            .unwrap();
+        info!("Client state, {}", String::from_utf8(name.name).unwrap());
+        let tag = self.tags.get_mut(&tag).unwrap();
+        let client = &mut tag.clients[client_];
+        let arg = match action {
+            0 => SetArg(false, false),
+            1 => SetArg(true, false),
+            2 => SetArg(false, true),
+            _ => return
+        };
+        if state == self.aux.atoms._NET_WM_STATE_DEMANDS_ATTENTION && tag.focused != Some(client_) && arg.apply(&mut client.flags.psuedo_urgent) {
+            if client.flags.psuedo_urgent {
+                tag.psuedo_urgent.insert(client_)
+            } else {
+                tag.psuedo_urgent.remove(&client_)
+            };
+            self.aux
+                .hooks
+                .tag_update(&self.tags, &self.tag_order, self.focused_monitor)
+        }
     }
 
     pub fn client_property(&mut self, tag: Atom, client_: usize, atom: Atom) {
@@ -785,12 +813,14 @@ impl WindowManager {
                 .ok()
                 .and_then(|cookie| cookie.reply().ok())
             {
+                info!("HINTS: {:?}", hints);
                 let changed = if hints.urgent {
                     tag.urgent.insert(client_)
                 } else {
                     tag.urgent.remove(&client_)
                 };
                 if changed {
+                    tag.clients[client_].flags.urgent = hints.urgent;
                     self.aux
                         .hooks
                         .tag_update(&self.tags, &self.tag_order, self.focused_monitor)
@@ -810,17 +840,12 @@ impl WindowManager {
             }
         }
         if let Some(id) = tag_id {
-            let mut bytes: Vec<u8> = Vec::with_capacity(8);
-            (id as u32).serialize_into(&mut bytes);
-            change_property(
-                &self.aux.dpy,
+            self.aux.dpy.change_property32(
                 PropMode::REPLACE,
                 client.win,
                 self.aux.atoms._NET_WM_DESKTOP,
                 AtomEnum::CARDINAL,
-                32,
-                1,
-                &bytes,
+                &[id as u32],
             )?;
         }
         Ok(())

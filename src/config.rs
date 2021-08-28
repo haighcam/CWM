@@ -1,3 +1,5 @@
+use crate::utils::mul_alpha;
+
 pub const IGNORED_MODS: [u16; 2] = [0, (1 << 1)]; //normal mask, ignore caplock
 pub const IGNORED_MASK: u16 = !IGNORED_MODS[1];
 
@@ -14,6 +16,9 @@ pub struct Theme {
     pub window_min_height: u16,
     pub border_color_focused: u32,
     pub border_color_unfocused: u32,
+    pub selection_gap: u16,
+    pub presel_color: u32,
+    pub sel_color: u32,
 }
 
 impl Default for Theme {
@@ -29,8 +34,11 @@ impl Default for Theme {
             window_height: 400,
             window_min_width: 60,
             window_min_height: 40,
-            border_color_focused: 0xAAFF0000,
-            border_color_unfocused: 0xAAFFFFFF,
+            border_color_focused: mul_alpha(0xAAFF0000),
+            border_color_unfocused: mul_alpha(0xAAFFFFFF),
+            selection_gap: 5,
+            presel_color: mul_alpha(0x6600FF00),
+            sel_color: mul_alpha(0x660000FF),
         }
     }
 }

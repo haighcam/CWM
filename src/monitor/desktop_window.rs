@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use x11rb::protocol::xproto::*;
 
 use super::{WindowLocation, WindowManager};

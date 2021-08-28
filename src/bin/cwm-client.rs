@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Error, Result};
+use anyhow::{bail, Error, Result};
 use cwm::connections::{
     ClientRequest, CwmResponse, HiddenSelection, Rule as Rule_, SetArg, Side as Side_, StackLayer,
     Stream, TagSelection, SOCKET,
@@ -8,17 +8,7 @@ use simplelog::*;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 
-use struct_args::Arg;
-
-fn parse_u32(string: &str) -> Result<u32> {
-    Ok(if let Some(string) = string.strip_prefix("0x") {
-        u32::from_str_radix(string, 16)?
-    } else if let Some(string) = string.strip_prefix('#') {
-        u32::from_str_radix(string, 16)?
-    } else {
-        string.parse()?
-    })
-}
+use struct_args::{parse_u32, Arg};
 
 struct Monitor(Option<u32>);
 impl Arg for Monitor {
@@ -474,12 +464,34 @@ mod command {
     #[derive(Arg)]
     pub(super) enum Args {
         Quit,
+        Reload,
+        #[struct_args_match("sel")]
+        Select(Node),
+        #[struct_args_match(ND, "sel-dir")]
+        SelectDir(Side),
+        #[struct_args_match(ND, "sel-parent")]
+        SelectParent,
+        #[struct_args_match(ND, "presel-amt")]
+        PreselAmt(f32),
+        #[struct_args_match(ND, "sel-cancel")]
+        SelectionCancel,
+        Rotate,
+        #[struct_args_match(ND, "!rotate")]
+        RotateRev,
     }
 
     impl Args {
         pub(super) fn process(self, mut stream: ClientStream) -> Result<()> {
             match self {
                 Self::Quit => stream.send_value(&ClientRequest::Quit),
+                Self::Reload => stream.send_value(&ClientRequest::Reload),
+                Self::Select(Node(node)) => stream.send_value(&ClientRequest::Select(node)),
+                Self::SelectDir(Side(side)) => stream.send_value(&ClientRequest::SelectDir(side)),
+                Self::SelectParent => stream.send_value(&ClientRequest::SelectParent),
+                Self::PreselAmt(amt) => stream.send_value(&ClientRequest::PreselAmt(amt)),
+                Self::SelectionCancel => stream.send_value(&ClientRequest::SelectionCancel),
+                Self::Rotate => stream.send_value(&ClientRequest::Rotate(false)),
+                Self::RotateRev => stream.send_value(&ClientRequest::Rotate(true)),
             }
         }
     }

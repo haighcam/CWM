@@ -10,7 +10,7 @@ use crate::connections::{CwmResponse, Stream, TagState};
 #[derive(Default)]
 pub struct Hooks {
     monitor_focused: HashMap<u32, (Vec<RefCell<Stream>>, Option<String>)>,
-    pub monitor_tags: (Vec<RefCell<Stream>>, Vec<TagState>, u32),
+    pub monitor_tags: (Vec<RefCell<Stream>>, Vec<(TagState, u32)>, u32),
     script_config: Option<String>,
     script_mon_open: Option<String>,
     script_mon_close: Option<String>,
@@ -102,10 +102,34 @@ impl Hooks {
 
     pub fn add_monitor_tag(&mut self, mut stream: Stream) {
         if stream.send(&CwmResponse::TagState(
-            self.monitor_tags.1.clone(),
+            self.monitor_tags.1.iter().map(|x| x.0.clone()).collect(),
             self.monitor_tags.2,
         )) {
             self.monitor_tags.0.push(RefCell::new(stream))
+        }
+    }
+
+    pub fn update_tag(&mut self, tag: &Tag) {
+        #[inline]
+        fn val_changed<T: PartialEq>(val: &mut T, new: T) -> bool {
+            if *val != new {
+                *val = new;
+                true
+            } else {
+                false
+            }
+        }
+        if let Some((state, _)) = self.monitor_tags.1.iter_mut().find(|x| x.1 == tag.id) {
+            if 
+            val_changed(&mut state.name, tag.name.clone())
+            || val_changed(&mut state.focused, tag.monitor)
+            || val_changed(&mut state.urgent, tag.urgent())
+            || val_changed(&mut state.empty, tag.empty()) {
+                let message = CwmResponse::TagState(self.monitor_tags.1.iter().map(|x| x.0.clone()).collect(), self.monitor_tags.2);
+                self.monitor_tags
+                    .0
+                    .retain(|hook| hook.borrow_mut().send(&message));    
+            }
         }
     }
 
@@ -122,7 +146,7 @@ impl Hooks {
         let mut changed = val_changed(&mut self.monitor_tags.2, focused_mon);
         if self.monitor_tags.1.len() < tags.len() {
             self.monitor_tags.1.extend(vec![
-                TagState::default();
+                (TagState::default(), 0);
                 tags.len() - self.monitor_tags.1.len()
             ]);
             changed = true;
@@ -131,7 +155,7 @@ impl Hooks {
             self.monitor_tags.1.drain(tags.len()..);
             changed = true;
         }
-        for (tag, state) in order
+        for (tag, (state, _)) in order
             .iter()
             .map(|id| tags.get(id).unwrap())
             .zip(self.monitor_tags.1.iter_mut())
@@ -142,7 +166,7 @@ impl Hooks {
             changed |= val_changed(&mut state.empty, tag.empty());
         }
         if changed {
-            let message = CwmResponse::TagState(self.monitor_tags.1.clone(), self.monitor_tags.2);
+            let message = CwmResponse::TagState(self.monitor_tags.1.iter().map(|x| x.0.clone()).collect(), self.monitor_tags.2);
             self.monitor_tags
                 .0
                 .retain(|hook| hook.borrow_mut().send(&message));

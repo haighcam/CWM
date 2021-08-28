@@ -1,0 +1,7 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=cwm
+Comment=A window manager
+Exec=cwm
+Icon=cwm
+Type=XSession

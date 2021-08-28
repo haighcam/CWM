@@ -1,7 +1,21 @@
 use std::collections::HashSet;
 use x11rb::protocol::xproto::*;
 
+use crate::tag::Split;
+
 pub use stack::{Stack, StackElem};
+
+pub fn mul_alpha(color: u32) -> u32 {
+    if color & 0xFF000000 == 0 {
+        color | 0xFF000000
+    } else {
+        let a = (color >> 24) & 0xFF;
+        let b = ((color >> 16) & 0xFF) * a / 0xFF;
+        let c = ((color >> 8) & 0xFF) * a / 0xFF;
+        let d = (color & 0xFF) * a / 0xFF;
+        (a << 24) | (b << 16) | (c << 8) | d
+    }
+}
 
 pub fn pop_set_ord<T: Clone + Eq + std::hash::Hash>(
     set: &mut HashSet<T>,
@@ -111,23 +125,26 @@ impl Rect {
             && other.y + other.height as i16 <= self.y + self.height as i16
     }
 
-    pub fn split(&self, split: f32, vert: bool, rect1: &mut Rect, rect2: &mut Rect, gap: u16) {
+    pub fn split(&self, split: &Split, amt: f32, rect1: &mut Rect, rect2: &mut Rect, gap: u16) {
         rect1.x = self.x;
         rect1.y = self.y;
-        if vert {
-            rect1.width = (self.width as f32 * split).round() as u16 - gap / 2;
-            rect1.height = self.height;
-            rect2.x = self.x + (rect1.width + gap) as i16;
-            rect2.y = self.y;
-            rect2.width = self.width - (rect1.width + gap);
-            rect2.height = self.height;
-        } else {
-            rect1.width = self.width;
-            rect1.height = (self.height as f32 * split).round() as _;
-            rect2.x = self.x;
-            rect2.y = self.y + (rect1.height + gap) as i16;
-            rect2.width = self.width;
-            rect2.height = self.height - (rect1.height + gap);
+        match split {
+            Split::Horizontal => {
+                rect1.width = self.width;
+                rect1.height = (self.height as f32 * amt).round() as _;
+                rect2.x = self.x;
+                rect2.y = self.y + (rect1.height + gap) as i16;
+                rect2.width = self.width;
+                rect2.height = self.height - (rect1.height + gap);
+            }
+            Split::Vertical => {
+                rect1.width = (self.width as f32 * amt).round() as u16 - gap / 2;
+                rect1.height = self.height;
+                rect2.x = self.x + (rect1.width + gap) as i16;
+                rect2.y = self.y;
+                rect2.width = self.width - (rect1.width + gap);
+                rect2.height = self.height;
+            }
         };
     }
 

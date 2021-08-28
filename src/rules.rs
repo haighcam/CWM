@@ -44,7 +44,7 @@ impl Rule {
             args.flags.floating = floating;
         }
         if let Some(size) = self.size {
-            args.size = size;
+            args.size = Some(size);
         }
         if let Some(pos) = self.pos {
             args.pos.replace(pos);

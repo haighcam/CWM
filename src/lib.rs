@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use x11rb::{
     atom_manager,
@@ -40,6 +40,10 @@ atom_manager! {
         _NET_WM_STATE_FULLSCREEN,
         _NET_WM_STATE_STICKY,
         _NET_WM_DESKTOP,
+        _NET_WM_STATE_DEMANDS_ATTENTION,
+        _NET_ACTIVE_WINDOW,
+        _NET_SUPPORTED,
+        _NET_SUPPORTING_WM_CHECK,
         WM_STATE,
         WM_PROTOCOLS,
         WM_DELETE_WINDOW,
@@ -47,6 +51,7 @@ atom_manager! {
     }
 }
 
+#[derive(Copy, Clone)]
 enum WindowLocation {
     Client(Atom, usize),
     Panel(Atom),
@@ -67,6 +72,7 @@ pub struct WindowManager {
     prev_monitor: Atom,
     windows: HashMap<Window, WindowLocation>,
     running: bool,
+    supporting: bool
 }
 
 impl WindowManager {
@@ -137,10 +143,11 @@ impl WindowManager {
             )?;
         }
 
-        dpy.flush()?;
         select_input(&dpy, root, NotifyMask::SCREEN_CHANGE)?;
-        let mut wm = Self {
-            aux: Aux::new(dpy, root)?,
+        dpy.flush()?;
+
+        let wm = Self {
+            aux: Aux::new(dpy, root, pref_screen)?,
             monitors: HashMap::new(),
             tags: HashMap::new(),
             free_tags: HashSet::new(),
@@ -151,9 +158,8 @@ impl WindowManager {
             prev_monitor: 0,
             windows: HashMap::new(),
             running: true,
+            supporting: false,
         };
-
-        wm.update_monitors()?;
 
         Ok(wm)
     }
@@ -164,6 +170,7 @@ pub fn run_wm() {
     let mut wm = WindowManager::new().unwrap();
     let mut event_handler = EventHandler::new();
     wm.aux.hooks.config();
+    wm.update_monitors().unwrap();
 
     while wm.running {
         wm.aux.wait_for_updates();

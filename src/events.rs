@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use log::info;
 use x11rb::{
     protocol::{randr::*, xproto::*, Event},
@@ -59,9 +59,8 @@ impl EventHandler {
 
     fn handle_enter_notify(&mut self, wm: &mut WindowManager, e: EnterNotifyEvent) -> Result<()> {
         info!("Handling Enter {}({})", e.event, e.child);
-        match wm.windows.get(&e.event) {
+        match wm.windows.get(&e.event).copied() {
             Some(WindowLocation::Client(tag, client)) => {
-                let (tag, client) = (*tag, *client);
                 if let Some(mon) = wm.tags.get(&tag).unwrap().monitor {
                     wm.set_focus(mon)?;
                 }
@@ -71,7 +70,7 @@ impl EventHandler {
                 }
             }
             Some(WindowLocation::Monitor(mon)) => {
-                wm.set_focus(*mon)?;
+                wm.set_focus(mon)?;
             }
             _ => (),
         }
@@ -125,10 +124,10 @@ impl EventHandler {
             String::from_utf8(atom.name).unwrap(),
             e.window
         );
-        match wm.windows.get(&e.window) {
-            Some(WindowLocation::Client(tag, client)) => wm.client_property(*tag, *client, e.atom),
+        match wm.windows.get(&e.window).copied() {
+            Some(WindowLocation::Client(tag, client)) => wm.client_property(tag, client, e.atom),
             Some(WindowLocation::Panel(mon)) => {
-                wm.panel_property_changed(e.window, *mon, e.atom)?
+                wm.panel_property_changed(e.window, mon, e.atom)?
             }
             _ => (),
         }
@@ -147,13 +146,23 @@ impl EventHandler {
             "Handling Client Message {}, {}, {:?}",
             String::from_utf8(name.name).unwrap(),
             e.window,
-            e.data.as_data32()
+            e.data.as_data32(),
         );
         if e.type_ == wm.aux.atoms._NET_WM_DESKTOP {
-            if let Some(WindowLocation::Client(tag, client)) = wm.windows.get(&e.window) {
-                if let Some(new_tag) = wm.tag_order.get(e.data.as_data32()[0] as usize) {
-                    wm.move_client(*tag, *client, SetArg(*new_tag, false))?;
+            if let Some(WindowLocation::Client(tag, client)) = wm.windows.get(&e.window).copied() {
+                if let Some(new_tag) = wm.tag_order.get(e.data.as_data32()[0] as usize).copied() {
+                    wm.move_client(tag, client, SetArg(new_tag, false))?;
                 }
+            }
+        } else if e.type_ == wm.aux.atoms._NET_WM_STATE {
+            if let Some(WindowLocation::Client(tag, client)) = wm.windows.get(&e.window).copied() {
+                let data = e.data.as_data32();
+                wm.client_state(tag, client, data[1], data[0]);
+                wm.client_state(tag, client, data[1], data[0]);
+            }
+        } else if e.type_ == wm.aux.atoms._NET_ACTIVE_WINDOW {
+            if let Some(WindowLocation::Client(tag, client)) = wm.windows.get(&e.window).copied() {
+                wm.client_state(tag, client, wm.aux.atoms._NET_WM_STATE_DEMANDS_ATTENTION, 1);
             }
         }
         Ok(())
@@ -163,17 +172,15 @@ impl EventHandler {
         wm: &mut WindowManager,
         e: ConfigureRequestEvent,
     ) -> Result<()> {
-        info!("Handling Configure Request");
-        if let Some(window) = wm.windows.get(&e.window) {
-            match window {
-                WindowLocation::Panel(_) | WindowLocation::DesktopWindow(_) => {
-                    configure_window(
-                        &wm.aux.dpy,
-                        e.window,
-                        &ConfigureWindowAux::from_configure_request(&e),
-                    )?;
-                }
-                _ => (),
+        info!("Handling Configure Request {}", e.window);
+        match wm.windows.get(&e.window) {
+            Some(WindowLocation::Client(..)) => (),
+            _ => {
+                configure_window(
+                    &wm.aux.dpy,
+                    e.window,
+                    &ConfigureWindowAux::from_configure_request(&e),
+                )?;
             }
         }
         Ok(())
@@ -295,7 +302,7 @@ impl EventHandler {
                 }
             }
             3 => tag.resize_client(
-                &wm.aux,
+                &mut wm.aux,
                 self.drag.win,
                 (
                     poin.root_x - self.drag.prev.0,

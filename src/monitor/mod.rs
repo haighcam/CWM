@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use x11rb::connection::Connection;
 use x11rb::protocol::{randr::*, xproto::*};
 use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
-
+use x11rb::wrapper::ConnectionExt as _;
 use super::{tag::ClientArgs, WindowLocation, WindowManager};
 use crate::connections::{Aux, SetArg};
 use crate::utils::{pop_set_ord, Rect};
@@ -144,6 +144,11 @@ impl WindowManager {
             bg,
             &ConfigureWindowAux::new().stack_mode(StackMode::BELOW),
         )?;
+        if !self.supporting {
+            self.supporting = true;
+            self.aux.dpy.change_property32(PropMode::REPLACE, self.aux.root, self.aux.atoms._NET_SUPPORTING_WM_CHECK, AtomEnum::WINDOW, &[bg])?;
+            self.aux.dpy.change_property32(PropMode::REPLACE, bg, self.aux.atoms._NET_SUPPORTING_WM_CHECK, AtomEnum::WINDOW, &[bg])?;
+        }
         map_window(&self.aux.dpy, bg)?;
         self.windows.insert(bg, WindowLocation::Monitor(id));
         self.aux.hooks.mon_open(id, &monitor.name, bg);
@@ -156,6 +161,11 @@ impl WindowManager {
         {
             if tag.apply_arg(&mut focused_tag, prev_tag) {
                 self.set_monitor_tag(mon, focused_tag)?;
+                self.aux.selection.hide(
+                    &self.aux.dpy,
+                    self.monitors.get(&mon).map(|x| x.prev_tag),
+                    None,
+                )?;
             }
         }
         if self.focused_monitor == mon {
@@ -171,13 +181,13 @@ impl WindowManager {
             return Ok(());
         }
         let old_valid = if let Some(tag) = self.tags.get_mut(&old_tag) {
-            tag.hide(&self.aux)?;
+            tag.hide(&mut self.aux)?;
             true
         } else {
             false
         };
         if let Some(old_mon) = self.tags.get(&tag).unwrap().monitor {
-            self.tags.get_mut(&tag).unwrap().hide(&self.aux)?;
+            self.tags.get_mut(&tag).unwrap().hide(&mut self.aux)?;
             if old_valid {
                 self.tags
                     .get_mut(&old_tag)
@@ -238,8 +248,9 @@ impl WindowManager {
             self.tags
                 .get_mut(&mon.focused_tag)
                 .unwrap()
-                .hide(&self.aux)?;
+                .hide(&mut self.aux)?;
             self.free_tags.insert(mon.focused_tag);
+            self.aux.hooks.mon_close(mon.id, &mon.name);
         }
         if self.tags.len() > self.monitors.len() {
             if let Some(tag) = self

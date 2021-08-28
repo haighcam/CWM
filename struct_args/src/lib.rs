@@ -21,3 +21,14 @@ impl<E: std::error::Error + Sync + Send + 'static, T: std::str::FromStr<Err = E>
             .parse()?)
     }
 }
+
+
+pub fn parse_u32(string: &str) -> Result<u32> {
+    Ok(if let Some(string) = string.strip_prefix("0x") {
+        u32::from_str_radix(string, 16)?
+    } else if let Some(string) = string.strip_prefix('#') {
+        u32::from_str_radix(string, 16)?
+    } else {
+        string.parse()?
+    })
+}

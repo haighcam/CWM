@@ -1,5 +1,4 @@
-use anyhow::{Context, Result};
-use log::info;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use x11rb::protocol::xproto::*;
 
@@ -20,9 +19,6 @@ pub enum StackLayer {
 }
 
 impl Layer {
-    pub const BELOW: usize = 0;
-    pub const NORMAL: usize = 1;
-    pub const ABOVE: usize = 2;
     pub const COUNT: usize = 3;
     pub const TILING: usize = 0;
     pub const FLOATING: usize = 1;

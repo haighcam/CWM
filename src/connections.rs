@@ -2,15 +2,23 @@ use anyhow::Result;
 use log::info;
 use nix::poll::{poll, PollFd, PollFlags};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::prelude::*;
 use std::net::Shutdown;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
+use x11rb::connection::Connection;
+use x11rb::protocol::render::*;
+use x11rb::protocol::shape::{ConnectionExt, *};
 use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
+use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
+use x11rb::wrapper::ConnectionExt as _;
 
 use crate::hooks::Hooks;
+use crate::tag::{NodeContents, Split, Tag};
+use crate::utils::{mul_alpha, Rect};
 use crate::{AtomCollection, WindowLocation, WindowManager};
 
 pub use crate::config::Theme;
@@ -18,6 +26,158 @@ pub use crate::rules::Rule;
 pub use crate::tag::{Side, StackLayer};
 
 pub const SOCKET: &str = "/tmp/cwm.sock";
+
+pub enum SelectionContent {
+    Presel(Atom, usize, Presel),
+    Node(Atom, usize),
+    None,
+}
+
+pub struct Selection {
+    pub win: Window,
+    pub sel: SelectionContent,
+}
+
+impl Selection {
+    fn new(dpy: &RustConnection, root: Window, vis: &VisualConfig) -> Result<Self> {
+        let win = dpy.generate_id()?;
+        create_window(
+            dpy,
+            vis.depth(),
+            win,
+            root,
+            0,
+            0,
+            100,
+            100,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            vis.visualid(),
+            &CreateWindowAux::new()
+                .colormap(vis.colormap())
+                .background_pixel(mul_alpha(0x6600FF00))
+                .border_pixel(0)
+                .event_mask(EventMask::ENTER_WINDOW),
+        )?;
+        dpy.shape_rectangles(
+            SO::SET,
+            SK::INPUT,
+            ClipOrdering::UNSORTED,
+            win,
+            0,
+            0,
+            &[Rectangle {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            }],
+        )?;
+        Ok(Self {
+            win,
+            sel: SelectionContent::None,
+        })
+    }
+
+    pub fn presel(
+        &mut self,
+        dpy: &RustConnection,
+        tag: Atom,
+        node: usize,
+    ) -> Result<Option<Presel>> {
+        Ok(match &self.sel {
+            SelectionContent::Presel(t, n, presel) if *t == tag && *n == node => {
+                let presel = presel.clone();
+                self.sel = SelectionContent::None;
+                unmap_window(dpy, self.win)?;
+                Some(presel)
+            }
+            _ => None,
+        })
+    }
+
+    pub fn sel(&mut self) -> Option<(Atom, usize)> {
+        if let SelectionContent::Node(tag, node) = &self.sel {
+            Some((*tag, *node))
+        } else {
+            None
+        }
+    }
+
+    pub fn show(&self, dpy: &RustConnection) -> Result<()> {
+        map_window(dpy, self.win)?;
+        Ok(())
+    }
+
+    pub fn hide(
+        &mut self,
+        dpy: &RustConnection,
+        tag_: Option<Atom>,
+        node_: Option<usize>,
+    ) -> Result<()> {
+        match &mut self.sel {
+            SelectionContent::Presel(tag, node, ..) | SelectionContent::Node(tag, node) => {
+                if tag_.map(|x| *tag == x).unwrap_or(true)
+                    && node_.map(|x| *node == x).unwrap_or(true)
+                {
+                    self.sel = SelectionContent::None;
+                    unmap_window(dpy, self.win)?;
+                }
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct Presel {
+    pub side: Side,
+    pub amt: f32,
+}
+
+impl Default for Presel {
+    fn default() -> Self {
+        Self {
+            side: Side::Right,
+            amt: 0.5,
+        }
+    }
+}
+
+pub struct VisualConfig(Option<(u8, Visualid, Colormap, Pictformat)>);
+
+impl VisualConfig {
+    pub fn new(dpy: &RustConnection, root: Window, screen: usize) -> Result<Self> {
+        let info = query_pict_formats(dpy)?.reply()?;
+        let formats: HashMap<_, _> = info.formats.iter().map(|x| (x.id, x)).collect();
+        for Pictdepth { depth, visuals } in &info.screens[screen].depths {
+            for visual in visuals {
+                if let Some(format) = formats.get(&visual.format) {
+                    if format.type_ == PictType::DIRECT && format.direct.alpha_mask == 0xFF {
+                        let colormap = dpy.generate_id()?;
+                        create_colormap(dpy, ColormapAlloc::NONE, colormap, root, visual.visual)?;
+                        info!("depth found {}, {:?}, {:X}", depth, format, visual.visual);
+                        return Ok(Self(Some((*depth, visual.visual, colormap, visual.format))));
+                    }
+                }
+            }
+        }
+        Ok(Self(None))
+    }
+
+    pub fn depth(&self) -> u8 {
+        self.0.map(|x| x.0).unwrap_or(COPY_DEPTH_FROM_PARENT)
+    }
+
+    pub fn visualid(&self) -> Visualid {
+        self.0.map(|x| x.1).unwrap_or(COPY_FROM_PARENT)
+    }
+
+    pub fn colormap(&self) -> Option<Colormap> {
+        self.0.map(|x| x.2)
+    }
+}
 
 pub struct Aux {
     pub dpy: RustConnection,
@@ -29,6 +189,8 @@ pub struct Aux {
     pub hooks: Hooks,
     pub atoms: AtomCollection,
     pub rules: Vec<Rule>,
+    pub vis: VisualConfig,
+    pub selection: Selection,
 }
 
 pub struct Stream {
@@ -89,6 +251,12 @@ pub enum ClientRequest {
     AddRule(Rule),
     AddTag(String),
     RemoveTag(TagSelection),
+    Select(Option<u32>),
+    SelectDir(Side),
+    SelectParent,
+    PreselAmt(f32),
+    SelectionCancel,
+    Rotate(bool),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -128,7 +296,7 @@ impl AsRawFd for Stream {
 }
 
 impl Aux {
-    pub(crate) fn new(dpy: RustConnection, root: u32) -> Result<Self> {
+    pub(crate) fn new(dpy: RustConnection, root: u32, screen: usize) -> Result<Self> {
         let _ = std::fs::remove_file(SOCKET); // possibly use this to check if it is already running.
         let listener = UnixListener::bind(SOCKET).unwrap();
         listener
@@ -141,6 +309,21 @@ impl Aux {
         ];
 
         let atoms = AtomCollection::new(&dpy)?.reply()?;
+        let vis = VisualConfig::new(&dpy, root, screen)?;
+        let selection = Selection::new(&dpy, root, &vis)?;
+
+        dpy.change_property32(
+            PropMode::APPEND,
+            root,
+            atoms._NET_SUPPORTED,
+            AtomEnum::ATOM,
+            &[
+                atoms._NET_WM_STATE,
+                atoms._NET_WM_STATE_FULLSCREEN,
+                atoms._NET_WM_STATE_DEMANDS_ATTENTION,
+                atoms._NET_ACTIVE_WINDOW
+            ]
+        )?;
 
         Ok(Self {
             dpy,
@@ -152,11 +335,56 @@ impl Aux {
             hooks: Hooks::new(),
             atoms,
             rules: Vec::new(),
+            vis,
+            selection,
         })
     }
 
     pub(crate) fn wait_for_updates(&mut self) {
         poll(&mut self.poll_fds, -1).ok();
+    }
+
+    pub fn resize_selection(&mut self, tag: &Tag) -> Result<()> {
+        let (mut r1, mut r2) = (Rect::default(), Rect::default());
+        if let Some((rect, attr)) = match &self.selection.sel {
+            SelectionContent::Presel(tag_, node, Presel { side, amt }) => {
+                (*tag_ == tag.id).then(|| {
+                    let size = tag.get_node_rect(*node);
+                    let (split, first) = side.get_split();
+                    size.split(&split, *amt, &mut r1, &mut r2, 0);
+                    (
+                        if first { &r1 } else { &r2 },
+                        ChangeWindowAttributesAux::new().background_pixel(self.theme.presel_color),
+                    )
+                })
+            }
+            SelectionContent::Node(tag_, node) => (*tag_ == tag.id).then(|| {
+                (
+                    tag.get_node_rect(*node),
+                    ChangeWindowAttributesAux::new().background_pixel(self.theme.sel_color),
+                )
+            }),
+            _ => None,
+        } {
+            configure_window(
+                &self.dpy,
+                self.selection.win,
+                &rect
+                    .aux(self.theme.selection_gap)
+                    .stack_mode(StackMode::ABOVE),
+            )?;
+            change_window_attributes(&self.dpy, self.selection.win, &attr)?;
+            clear_area(
+                &self.dpy,
+                false,
+                self.selection.win,
+                0,
+                0,
+                rect.width,
+                rect.height,
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -306,16 +534,15 @@ impl WindowManager {
         poll_fd: PollFd,
         request: ClientRequest,
     ) -> Result<()> {
-        use ClientRequest::*;
         info!("Request {:?}", request);
         match request {
-            MonitorFocus(mon) => {
+            ClientRequest::MonitorFocus(mon) => {
                 if let Some(mon) = self.get_monitor(mon) {
                     self.aux.hooks.add_monitor_focus(mon, stream)
                 }
             }
-            TagState => self.aux.hooks.add_monitor_tag(stream),
-            CloseClient(client, kill) => {
+            ClientRequest::TagState => self.aux.hooks.add_monitor_tag(stream),
+            ClientRequest::CloseClient(client, kill) => {
                 info!("Killing Client");
                 if let Some((tag, client)) = self.get_client(client) {
                     self.tags
@@ -327,11 +554,11 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            Quit => {
+            ClientRequest::Quit => {
                 self.running = false;
                 info!("Exiting");
             }
-            Reload => {
+            ClientRequest::Reload => {
                 for mon in self.monitors.values() {
                     self.aux.hooks.mon_close(mon.id, mon.name.as_str());
                 }
@@ -340,7 +567,7 @@ impl WindowManager {
                     self.aux.hooks.mon_open(mon.id, mon.name.as_str(), mon.bg);
                 }
             }
-            SetFullscreen(client, arg) => {
+            ClientRequest::SetFullscreen(client, arg) => {
                 info!("Fullscreen {:?}", arg);
                 if let Some((tag, client)) = self.get_client(client) {
                     self.tags
@@ -351,7 +578,7 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            SetLayer(client, arg) => {
+            ClientRequest::SetLayer(client, arg) => {
                 info!("SetLayer {:?}", arg);
                 if let Some((tag, client)) = self.get_client(client) {
                     self.tags
@@ -362,7 +589,7 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            SetFloating(client, arg) => {
+            ClientRequest::SetFloating(client, arg) => {
                 info!("Floating {:?}", arg);
                 if let Some((tag, client)) = self.get_client(client) {
                     self.tags
@@ -373,7 +600,7 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            SetSticky(client, arg) => {
+            ClientRequest::SetSticky(client, arg) => {
                 info!("Sticky {:?}", arg);
                 if let Some((tag, client)) = self.get_client(client) {
                     self.set_sticky(tag, client, &arg);
@@ -381,7 +608,7 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            SetHidden(client, arg) => {
+            ClientRequest::SetHidden(client, arg) => {
                 info!("Hidden {:?}", arg);
                 if let Some((tag, client)) = self.get_client(client) {
                     self.tags
@@ -392,7 +619,7 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            SetMonocle(tag, arg) => {
+            ClientRequest::SetMonocle(tag, arg) => {
                 info!("Monocle {:?}", arg);
                 if let Some(tag) = self.get_tag(tag)? {
                     self.tags
@@ -403,7 +630,7 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            Show(tag, selection) => {
+            ClientRequest::Show(tag, selection) => {
                 info!("Show {:?}, {:?}", tag, selection);
                 if let Some(tag) = self.get_tag(tag)? {
                     self.tags
@@ -414,12 +641,12 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            FocusedMonitor => {
+            ClientRequest::FocusedMonitor => {
                 stream.send(&CwmResponse::FocusedMonitor(self.focused_monitor));
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            FocusedTag(mon) => {
+            ClientRequest::FocusedTag(mon) => {
                 if let Some(mon) = self.get_monitor(mon) {
                     stream.send(&CwmResponse::FocusedTag(
                         self.monitors.get(&mon).unwrap().focused_tag,
@@ -428,7 +655,7 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            FocusedWindow(tag) => {
+            ClientRequest::FocusedWindow(tag) => {
                 if let Some(tag) = self.get_tag(tag)? {
                     let tag = self.tags.get(&tag).unwrap();
                     stream.send(&CwmResponse::FocusedWindow(
@@ -438,14 +665,14 @@ impl WindowManager {
                     self.aux.poll_fds.push(poll_fd);
                 }
             }
-            FocusTag(mon, tag, toggle) => {
+            ClientRequest::FocusTag(mon, tag, toggle) => {
                 if let (Some(mon), Some(tag)) = (self.get_monitor(mon), self.get_tag(tag)?) {
                     self.switch_monitor_tag(mon, SetArg(tag, toggle))?;
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            SetWindowTag(client, tag, toggle) => {
+            ClientRequest::SetWindowTag(client, tag, toggle) => {
                 if let Some(dest) = self.get_tag(tag)? {
                     if let Some((tag, client)) = self.get_client(client) {
                         self.move_client(tag, client, SetArg(dest, toggle))?;
@@ -454,14 +681,14 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            CycleWindow(rev) => {
+            ClientRequest::CycleWindow(rev) => {
                 let tag = self.focused_tag();
                 let tag = self.tags.get_mut(&tag).unwrap();
                 tag.cycle(&mut self.aux, rev)?;
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            SelectNeighbour(client, side) => {
+            ClientRequest::SelectNeighbour(client, side) => {
                 if let Some((tag, client)) = self.get_client(client) {
                     let tag = self.tags.get_mut(&tag).unwrap();
                     if let Some(neighbour) = tag.get_neighbour(client, side) {
@@ -471,7 +698,7 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            MoveWindow(client, side, amt) => {
+            ClientRequest::MoveWindow(client, side, amt) => {
                 if let Some((tag, client)) = self.get_client(client) {
                     let tag = self.tags.get_mut(&tag).unwrap();
                     tag.move_side(&self.aux, client, side, amt)?;
@@ -479,12 +706,12 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            ResizeWindow(client, side, amt) => {
+            ClientRequest::ResizeWindow(client, side, amt) => {
                 if let Some((tag, client)) = self.get_client(client) {
                     let tag = self.tags.get_mut(&tag).unwrap();
                     let delta = side.parse_amt(amt);
                     tag.resize_client(
-                        &self.aux,
+                        &mut self.aux,
                         client,
                         delta,
                         side == Side::Left,
@@ -494,7 +721,7 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            MonitorName(mon) => {
+            ClientRequest::MonitorName(mon) => {
                 if let Some(mon) = self.get_monitor(mon) {
                     stream.send(&CwmResponse::Name(
                         self.monitors.get(&mon).unwrap().name.clone(),
@@ -503,7 +730,7 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            TagName(tag) => {
+            ClientRequest::TagName(tag) => {
                 if let Some(tag) = self.get_tag(tag)? {
                     stream.send(&CwmResponse::Name(
                         self.tags.get(&tag).unwrap().name.clone(),
@@ -512,8 +739,8 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            ConfigBorderFocused(color) => {
-                self.aux.theme.border_color_focused = color;
+            ClientRequest::ConfigBorderFocused(color) => {
+                self.aux.theme.border_color_focused = mul_alpha(color);
                 for mon in self.monitors.values() {
                     let tag = self.tags.get(&mon.focused_tag).unwrap();
                     if let Some(client) = tag.focused_client() {
@@ -529,8 +756,8 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            ConfigBorderUnfocused(color) => {
-                self.aux.theme.border_color_unfocused = color;
+            ClientRequest::ConfigBorderUnfocused(color) => {
+                self.aux.theme.border_color_unfocused = mul_alpha(color);
                 for tag in self.tags.values() {
                     let focused = tag.focused_client();
                     for (id, client) in tag.clients().iter().enumerate() {
@@ -547,7 +774,7 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            ConfigBorderWidth(width) => {
+            ClientRequest::ConfigBorderWidth(width) => {
                 for tag in self.tags.values_mut() {
                     for client in tag.clients_mut() {
                         if client.border_width == self.aux.theme.border_width {
@@ -564,16 +791,16 @@ impl WindowManager {
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            ConfigGap(gap) => {
+            ClientRequest::ConfigGap(gap) => {
                 self.aux.theme.gap = gap;
                 for mon in self.monitors.values() {
                     let tag = self.tags.get_mut(&mon.focused_tag).unwrap();
-                    tag.resize_tiled(&self.aux, 0, Some(&mon.free_rect()))?;
+                    tag.set_tiling_size(&self.aux, mon.free_rect())?;
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            ConfigMargin(side, marg) => {
+            ClientRequest::ConfigMargin(side, marg) => {
                 match side {
                     Side::Left => self.aux.theme.left_margin = marg,
                     Side::Right => self.aux.theme.right_margin = marg,
@@ -582,27 +809,129 @@ impl WindowManager {
                 }
                 for mon in self.monitors.values() {
                     let tag = self.tags.get_mut(&mon.focused_tag).unwrap();
-                    tag.resize_tiled(&self.aux, 0, Some(&mon.free_rect()))?;
+                    tag.set_tiling_size(&self.aux, mon.free_rect())?;
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            AddRule(rule) => {
+            ClientRequest::AddRule(rule) => {
                 self.aux.rules.push(rule);
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            AddTag(tag) => {
+            ClientRequest::AddTag(tag) => {
                 self.add_tag(tag)?;
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
             }
-            RemoveTag(tag) => {
+            ClientRequest::RemoveTag(tag) => {
                 if let Some(tag) = self.get_tag(tag)? {
                     self.remove_tag(tag)?;
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);
+            }
+            ClientRequest::Select(client) => {
+                if let Some((tag, client)) = self.get_client(client) {
+                    let tag = self.tags.get(&tag).unwrap();
+                    self.aux.selection.sel =
+                        SelectionContent::Node(tag.id, tag.client(client).node);
+                    self.aux.resize_selection(tag)?;
+                    self.aux.selection.show(&self.aux.dpy)?;
+                }
+            }
+            ClientRequest::SelectParent => {
+                if let Some((tag, node)) = match &mut self.aux.selection.sel {
+                    SelectionContent::Node(tag, node) | SelectionContent::Presel(tag, node, ..) => {
+                        Some((*tag, *node))
+                    }
+                    SelectionContent::None => self.get_client(None).map(|(tag, client)| (tag, self.tags.get(&tag).unwrap().client(client).node)),
+                } {
+                    let node_ = &self.tags.get(&tag).unwrap().node(node);
+                    if let Some((node, _)) = node_.parent {
+                        self.aux.selection.sel = SelectionContent::Node(tag, node);
+                        let tag = self.tags.get(&tag).unwrap();
+                        self.aux.resize_selection(tag)?;
+                        self.aux.selection.show(&self.aux.dpy)?;
+                    }
+                }
+            }
+            ClientRequest::SelectDir(side) => match &mut self.aux.selection.sel {
+                SelectionContent::Node(tag, node) => {
+                    let tag = *tag;
+                    let node_ = &self.tags.get(&tag).unwrap().node(*node);
+                    match &node_.info {
+                        NodeContents::Node(node_) => {
+                            if let Some(node_) = match (&node_.split, side) {
+                                (Split::Vertical, Side::Left) => Some(node_.first_child),
+                                (Split::Vertical, Side::Right) => Some(node_.second_child),
+                                (Split::Horizontal, Side::Top) => Some(node_.first_child),
+                                (Split::Horizontal, Side::Bottom) => Some(node_.second_child),
+                                _ => None,
+                            } {
+                                *node = node_;
+                            }
+                        }
+                        NodeContents::Leaf(..) => {
+                            let node = *node;
+                            self.aux.selection.sel =
+                                SelectionContent::Presel(tag, node, Presel { side, amt: 0.5 })
+                        }
+                        _ => (),
+                    }
+                    let tag = self.tags.get(&tag).unwrap();
+                    self.aux.resize_selection(tag)?;
+                    self.aux.selection.show(&self.aux.dpy)?;
+                }
+                SelectionContent::Presel(tag, _, presel) => {
+                    presel.side = side;
+                    let tag = self.tags.get(tag).unwrap();
+                    self.aux.resize_selection(tag)?;
+                    self.aux.selection.show(&self.aux.dpy)?;
+                }
+                _ => {
+                    if let Some((tag, client)) = self.get_client(None) {
+                        let tag = self.tags.get(&tag).unwrap();
+                        self.aux.selection.sel = SelectionContent::Presel(
+                            tag.id,
+                            tag.client(client).node,
+                            Presel { side, amt: 0.5 },
+                        );
+                        self.aux.resize_selection(tag)?;
+                        self.aux.selection.show(&self.aux.dpy)?;
+                    }
+                }
+            },
+            ClientRequest::PreselAmt(amt_) => {
+                if let Some(tag) = if let SelectionContent::Presel(tag, _, Presel { side, amt }) =
+                    &mut self.aux.selection.sel
+                {
+                    *amt = (if side.get_split().1 {
+                        *amt + amt_
+                    } else {
+                        *amt - amt_
+                    })
+                    .min(Side::MAX)
+                    .max(Side::MIN);
+                    Some(self.tags.get(tag).unwrap())
+                } else {
+                    None
+                } {
+                    self.aux.resize_selection(tag)?;
+                }
+            }
+            ClientRequest::SelectionCancel => {
+                self.aux.selection.hide(&self.aux.dpy, None, None)?;
+            }
+            ClientRequest::Rotate(rev) => {
+                if let SelectionContent::Node(tag, node) = &self.aux.selection.sel {
+                    self.tags
+                        .get_mut(tag)
+                        .unwrap()
+                        .rotate(&self.aux, *node, rev)?;
+                } else if let Some(tag) = self.get_tag(TagSelection::Focused(None))? {
+                    self.tags.get_mut(&tag).unwrap().rotate(&self.aux, 0, rev)?;
+                }
             }
         }
         Ok(())
