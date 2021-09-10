@@ -108,9 +108,9 @@ impl Tag {
             &aux.dpy,
             client.win,
             &conf_aux
-                .x(None)
-                .y(None)
-                .border_width(None)
+                .x(0)
+                .y(0)
+                .border_width(0)
                 .stack_mode(None)
                 .sibling(None),
         )?;

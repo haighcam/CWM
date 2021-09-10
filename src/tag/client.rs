@@ -389,6 +389,7 @@ impl WindowManager {
     pub fn remove_client(&mut self, tag: Atom, client: usize) -> Result<(Window, Window)> {
         let tag = self.tags.get_mut(&tag).unwrap();
         tag.urgent.remove(&client);
+        tag.psuedo_urgent.remove(&client);
         tag.free_clients.insert(client);
         let (win, frame, node) = {
             let client = &mut tag.clients[client];

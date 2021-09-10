@@ -102,7 +102,7 @@ mod node {
     #[derive(Arg)]
     pub(super) enum Args {
         Set(Node, NodeFlags),
-        #[struct_args_match(ND, "set-layout")]
+        #[struct_args_match(ND, "set-layer")]
         SetLayer(Node, Layer),
         Kill(Node),
         Close(Node),
