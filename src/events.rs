@@ -138,13 +138,10 @@ impl EventHandler {
         wm: &mut WindowManager,
         e: ClientMessageEvent,
     ) -> Result<()> {
-        let name = get_atom_name(&wm.aux.dpy, e.type_)
-            .unwrap()
-            .reply()
-            .unwrap();
+        let name = get_atom_name(&wm.aux.dpy, e.type_)?.reply()?;
         info!(
             "Handling Client Message {}, {}, {:?}",
-            String::from_utf8(name.name).unwrap(),
+            String::from_utf8(name.name)?,
             e.window,
             e.data.as_data32(),
         );

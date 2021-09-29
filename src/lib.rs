@@ -178,7 +178,7 @@ pub fn run_wm() {
             wm.running = false;
             None
         }) {
-            event_handler.handle_event(&mut wm, event).unwrap();
+            let _ = event_handler.handle_event(&mut wm, event);
         }
 
         wm.handle_connections().unwrap();
