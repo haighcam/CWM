@@ -120,15 +120,18 @@ impl Hooks {
             }
         }
         if let Some((state, _)) = self.monitor_tags.1.iter_mut().find(|x| x.1 == tag.id) {
-            if 
-            val_changed(&mut state.name, tag.name.clone())
-            || val_changed(&mut state.focused, tag.monitor)
-            || val_changed(&mut state.urgent, tag.urgent())
-            || val_changed(&mut state.empty, tag.empty()) {
-                let message = CwmResponse::TagState(self.monitor_tags.1.iter().map(|x| x.0.clone()).collect(), self.monitor_tags.2);
+            if val_changed(&mut state.name, tag.name.clone())
+                || val_changed(&mut state.focused, tag.monitor)
+                || val_changed(&mut state.urgent, tag.urgent())
+                || val_changed(&mut state.empty, tag.empty())
+            {
+                let message = CwmResponse::TagState(
+                    self.monitor_tags.1.iter().map(|x| x.0.clone()).collect(),
+                    self.monitor_tags.2,
+                );
                 self.monitor_tags
                     .0
-                    .retain(|hook| hook.borrow_mut().send(&message));    
+                    .retain(|hook| hook.borrow_mut().send(&message));
             }
         }
     }
@@ -166,7 +169,10 @@ impl Hooks {
             changed |= val_changed(&mut state.empty, tag.empty());
         }
         if changed {
-            let message = CwmResponse::TagState(self.monitor_tags.1.iter().map(|x| x.0.clone()).collect(), self.monitor_tags.2);
+            let message = CwmResponse::TagState(
+                self.monitor_tags.1.iter().map(|x| x.0.clone()).collect(),
+                self.monitor_tags.2,
+            );
             self.monitor_tags
                 .0
                 .retain(|hook| hook.borrow_mut().send(&message));

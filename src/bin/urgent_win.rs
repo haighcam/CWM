@@ -2,8 +2,8 @@ extern crate x11rb;
 
 use x11rb::connection::Connection;
 //use x11rb::cursor::Handle as CursorHandle;
-use x11rb::protocol::xproto::*;
 use x11rb::properties::WmHints;
+use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
 //use x11rb::resource_manager::Database;
 use x11rb::wrapper::ConnectionExt as _;
@@ -58,7 +58,7 @@ fn main() {
     )
     .unwrap();
 
-   // util::start_timeout_thread(conn1.clone(), win_id);
+    // util::start_timeout_thread(conn1.clone(), win_id);
 
     let title = "Simple Window";
     conn.change_property8(
@@ -151,7 +151,7 @@ fn main() {
                 }
             }
             Event::FocusOut(_) => {
-                hints.urgent ^= true;            
+                hints.urgent ^= true;
                 hints.set(conn, win_id).unwrap();
                 conn.flush().unwrap();
             }

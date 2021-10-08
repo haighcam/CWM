@@ -1,13 +1,13 @@
+use super::{tag::ClientArgs, WindowLocation, WindowManager};
+use crate::connections::{Aux, SetArg};
+use crate::utils::{pop_set_ord, Rect};
 use anyhow::Result;
 use log::info;
 use std::collections::{HashMap, HashSet};
 use x11rb::connection::Connection;
 use x11rb::protocol::{randr::*, xproto::*};
-use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
 use x11rb::wrapper::ConnectionExt as _;
-use super::{tag::ClientArgs, WindowLocation, WindowManager};
-use crate::connections::{Aux, SetArg};
-use crate::utils::{pop_set_ord, Rect};
+use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
 
 mod desktop_window;
 mod panel;
@@ -120,7 +120,7 @@ impl WindowManager {
             .or_else(|| pop_set_ord(&mut self.free_tags, &self.tag_order))
             .map_or_else(|| self.temp_tag(), Ok)?;
         self.monitors.insert(id, monitor);
-        //        self.focused_monitor = id;
+        // self.focused_monitor = id;
         self.set_monitor_tag(id, tag)?;
         let monitor = self.monitors.get_mut(&id).unwrap();
         monitor.prev_tag = tag;
@@ -146,8 +146,20 @@ impl WindowManager {
         )?;
         if !self.supporting {
             self.supporting = true;
-            self.aux.dpy.change_property32(PropMode::REPLACE, self.aux.root, self.aux.atoms._NET_SUPPORTING_WM_CHECK, AtomEnum::WINDOW, &[bg])?;
-            self.aux.dpy.change_property32(PropMode::REPLACE, bg, self.aux.atoms._NET_SUPPORTING_WM_CHECK, AtomEnum::WINDOW, &[bg])?;
+            self.aux.dpy.change_property32(
+                PropMode::REPLACE,
+                self.aux.root,
+                self.aux.atoms._NET_SUPPORTING_WM_CHECK,
+                AtomEnum::WINDOW,
+                &[bg],
+            )?;
+            self.aux.dpy.change_property32(
+                PropMode::REPLACE,
+                bg,
+                self.aux.atoms._NET_SUPPORTING_WM_CHECK,
+                AtomEnum::WINDOW,
+                &[bg],
+            )?;
         }
         map_window(&self.aux.dpy, bg)?;
         self.windows.insert(bg, WindowLocation::Monitor(id));

@@ -13,8 +13,8 @@ use x11rb::protocol::render::*;
 use x11rb::protocol::shape::{ConnectionExt, *};
 use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
-use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
 use x11rb::wrapper::ConnectionExt as _;
+use x11rb::{COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT};
 
 use crate::hooks::Hooks;
 use crate::tag::{NodeContents, Split, Tag};
@@ -321,8 +321,8 @@ impl Aux {
                 atoms._NET_WM_STATE,
                 atoms._NET_WM_STATE_FULLSCREEN,
                 atoms._NET_WM_STATE_DEMANDS_ATTENTION,
-                atoms._NET_ACTIVE_WINDOW
-            ]
+                atoms._NET_ACTIVE_WINDOW,
+            ],
         )?;
 
         Ok(Self {
@@ -845,7 +845,9 @@ impl WindowManager {
                     SelectionContent::Node(tag, node) | SelectionContent::Presel(tag, node, ..) => {
                         Some((*tag, *node))
                     }
-                    SelectionContent::None => self.get_client(None).map(|(tag, client)| (tag, self.tags.get(&tag).unwrap().client(client).node)),
+                    SelectionContent::None => self.get_client(None).map(|(tag, client)| {
+                        (tag, self.tags.get(&tag).unwrap().client(client).node)
+                    }),
                 } {
                     let node_ = &self.tags.get(&tag).unwrap().node(node);
                     if let Some((node, _)) = node_.parent {

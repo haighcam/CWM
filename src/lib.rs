@@ -72,7 +72,7 @@ pub struct WindowManager {
     prev_monitor: Atom,
     windows: HashMap<Window, WindowLocation>,
     running: bool,
-    supporting: bool
+    supporting: bool,
 }
 
 impl WindowManager {

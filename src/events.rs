@@ -126,9 +126,7 @@ impl EventHandler {
         );
         match wm.windows.get(&e.window).copied() {
             Some(WindowLocation::Client(tag, client)) => wm.client_property(tag, client, e.atom),
-            Some(WindowLocation::Panel(mon)) => {
-                wm.panel_property_changed(e.window, mon, e.atom)?
-            }
+            Some(WindowLocation::Panel(mon)) => wm.panel_property_changed(e.window, mon, e.atom)?,
             _ => (),
         }
         Ok(())
@@ -172,6 +170,7 @@ impl EventHandler {
         info!("Handling Configure Request {}", e.window);
         match wm.windows.get(&e.window) {
             Some(WindowLocation::Client(..)) => (),
+            Some(WindowLocation::Monitor(..)) => (),
             _ => {
                 configure_window(
                     &wm.aux.dpy,

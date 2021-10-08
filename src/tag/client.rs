@@ -749,9 +749,12 @@ impl WindowManager {
             0 => SetArg(false, false),
             1 => SetArg(true, false),
             2 => SetArg(false, true),
-            _ => return
+            _ => return,
         };
-        if state == self.aux.atoms._NET_WM_STATE_DEMANDS_ATTENTION && tag.focused != Some(client_) && arg.apply(&mut client.flags.psuedo_urgent) {
+        if state == self.aux.atoms._NET_WM_STATE_DEMANDS_ATTENTION
+            && tag.focused != Some(client_)
+            && arg.apply(&mut client.flags.psuedo_urgent)
+        {
             if client.flags.psuedo_urgent {
                 tag.psuedo_urgent.insert(client_)
             } else {

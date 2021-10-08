@@ -406,8 +406,7 @@ impl Tag {
     }
 
     fn rotate_nodes(&mut self, _node: usize, _child1: usize, _child2: usize, rev: bool) {
-        let (node, child1, child2) =
-            three_mut(&mut self.nodes, (_node, _child1, _child2)).unwrap();
+        let (node, child1, child2) = three_mut(&mut self.nodes, (_node, _child1, _child2)).unwrap();
         if let NodeContents::Node(info) = &mut node.info {
             match &info.split {
                 Split::Horizontal => {
