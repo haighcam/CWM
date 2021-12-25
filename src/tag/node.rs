@@ -826,13 +826,13 @@ impl Tag {
         let parent = self.nodes[node].parent;
         self.nodes[node].info = NodeContents::Empty;
         self.free_nodes.push(node);
-        info!("removing {}", node);
+        info!("removing node {}", node);
         if let Some((parent_, first)) = parent {
             {
                 let info = match &self.nodes[parent_].info {
                     NodeContents::Node(node) => {
                         let child = node.get_child(!first);
-                        info!("removing {}", child);
+                        info!("removing node {}", child);
                         self.free_nodes.push(child);
                         let child = &self.nodes[child];
                         Some((child.info.clone(), child.absent))

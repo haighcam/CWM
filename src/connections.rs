@@ -659,7 +659,7 @@ impl WindowManager {
                 if let Some(tag) = self.get_tag(tag)? {
                     let tag = self.tags.get(&tag).unwrap();
                     stream.send(&CwmResponse::FocusedWindow(
-                        tag.focused_client().map(|x| tag.client(x).frame),
+                        tag.focused_client().map(|x| tag.client(x).win),
                     ));
                     self.aux.streams.push(stream);
                     self.aux.poll_fds.push(poll_fd);
@@ -747,7 +747,7 @@ impl WindowManager {
                         let client = tag.client(client);
                         change_window_attributes(
                             &self.aux.dpy,
-                            client.frame,
+                            client.win,
                             &ChangeWindowAttributesAux::new()
                                 .border_pixel(self.aux.theme.border_color_focused),
                         )?;
@@ -764,7 +764,7 @@ impl WindowManager {
                         if Some(id) != focused {
                             change_window_attributes(
                                 &self.aux.dpy,
-                                client.frame,
+                                client.win,
                                 &ChangeWindowAttributesAux::new()
                                     .border_pixel(self.aux.theme.border_color_unfocused),
                             )?;

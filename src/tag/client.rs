@@ -182,7 +182,6 @@ pub struct Client {
     pub layer_pos: (usize, usize),
     pub flags: ClientFlags,
     pub win: Window,
-    pub frame: Window,
     protocols: ClientProtocols,
     pub ignore_unmaps: usize,
 }
@@ -218,15 +217,13 @@ impl Client {
             aux.atoms.WM_STATE,
             &[1, NONE],
         )?;
-        map_window(&aux.dpy, self.frame)?;
         map_window(&aux.dpy, self.win)?;
         Ok(())
     }
 
     pub fn hide(&mut self, aux: &mut Aux, tag: Atom) -> Result<()> {
-        info!("hiding window {} {}", self.win, self.frame);
+        info!("hiding window {}", self.win);
         unmap_window(&aux.dpy, self.win)?;
-        unmap_window(&aux.dpy, self.frame)?;
         aux.dpy.change_property32(
             PropMode::REPLACE,
             self.win,
@@ -234,7 +231,7 @@ impl Client {
             aux.atoms.WM_STATE,
             &[3, NONE],
         )?;
-        self.ignore_unmaps += 2;
+        self.ignore_unmaps += 1;
         aux.selection.hide(&aux.dpy, Some(tag), Some(self.node))?;
         Ok(())
     }
@@ -254,7 +251,7 @@ impl Tag {
             let client = &self.clients[client];
             change_window_attributes(
                 &aux.dpy,
-                client.frame,
+                client.win,
                 &ChangeWindowAttributesAux::new().border_pixel(aux.theme.border_color_unfocused),
             )?;
         }
@@ -266,7 +263,7 @@ impl Tag {
         // focused window callback
         change_window_attributes(
             &aux.dpy,
-            client.frame,
+            client.win,
             &ChangeWindowAttributesAux::new().border_pixel(aux.theme.border_color_focused),
         )?;
         client.flags.psuedo_urgent = false;
@@ -287,8 +284,7 @@ impl Tag {
     ) -> Result<()> {
         let client = &self.clients[client];
         let conf_aux = size.aux(if border { client.border_width } else { 0 });
-        configure_window(&aux.dpy, client.frame, &conf_aux)?;
-        configure_window(&aux.dpy, client.win, &conf_aux.x(0).y(0).border_width(None))?;
+        configure_window(&aux.dpy, client.win, &conf_aux)?;
         Ok(())
     }
 
@@ -357,7 +353,7 @@ impl Tag {
             let client = &self.clients[client];
             change_window_attributes(
                 &aux.dpy,
-                client.frame,
+                client.win,
                 &ChangeWindowAttributesAux::new().border_pixel(aux.theme.border_color_unfocused),
             )?;
         }
@@ -386,12 +382,12 @@ impl Tag {
 }
 
 impl WindowManager {
-    pub fn remove_client(&mut self, tag: Atom, client: usize) -> Result<(Window, Window)> {
+    pub fn remove_client(&mut self, tag: Atom, client: usize) -> Result<Window> {
         let tag = self.tags.get_mut(&tag).unwrap();
         tag.urgent.remove(&client);
         tag.psuedo_urgent.remove(&client);
         tag.free_clients.insert(client);
-        let (win, frame, node) = {
+        let (win, node) = {
             let client = &mut tag.clients[client];
             let (layer, layer_pos) = client.layer_pos;
             tag.layers[layer].remove(layer_pos);
@@ -399,7 +395,7 @@ impl WindowManager {
                 tag.focus_stack.remove_node(client.stack_pos);
             }
             client.flags.hidden = true;
-            (client.win, client.frame, client.node)
+            (client.win, client.node)
         };
         if tag.id
             == self
@@ -411,7 +407,6 @@ impl WindowManager {
             tag.set_focus(&mut self.aux)?;
         }
         self.windows.remove(&win);
-        self.windows.remove(&frame);
         if node != 0 {
             tag.remove_node(&self.aux, node)?;
         } else {
@@ -420,13 +415,12 @@ impl WindowManager {
         self.aux
             .selection
             .hide(&self.aux.dpy, Some(tag.id), Some(node))?;
-        Ok((win, frame))
+        Ok(win)
     }
 
     pub fn unmanage_client(&mut self, tag: Atom, client: usize) -> Result<()> {
-        let (win, frame) = self.remove_client(tag, client)?;
-        reparent_window(&self.aux.dpy, win, self.aux.root, 0, 0)?;
-        destroy_window(&self.aux.dpy, frame)?;
+        let win = self.remove_client(tag, client)?;
+        info!("Unmanaging and removing client {}", win);
         delete_property(&self.aux.dpy, win, self.aux.atoms.WM_STATE)?;
         delete_property(&self.aux.dpy, win, self.aux.atoms._NET_WM_STATE)?;
         self.aux
@@ -568,7 +562,6 @@ impl WindowManager {
         };
 
         let hidden = flags.hidden;
-        let frame = self.aux.dpy.generate_id().unwrap();
         let client = Client {
             name,
             net_name,
@@ -582,7 +575,6 @@ impl WindowManager {
             layer_pos: (0, 0),
             flags,
             win,
-            frame,
             protocols,
             ignore_unmaps: 0,
         };
@@ -593,35 +585,15 @@ impl WindowManager {
         info!("currennt node state {:?}, {:?}", tag.free_nodes, tag.nodes);
         let client = tag.add_client(&mut self.aux, client, parent, info, focus)?;
 
-        let aux = CreateWindowAux::new()
-            .event_mask(
-                EventMask::ENTER_WINDOW
-                    | EventMask::FOCUS_CHANGE
-                    // | EventMask::SUBSTRUCTURE_REDIRECT
-                    | EventMask::SUBSTRUCTURE_NOTIFY,
-            )
-            .colormap(self.aux.vis.colormap())
-            .border_pixel(self.aux.theme.border_color_unfocused)
-            .background_pixel(0);
-        create_window(
-            &self.aux.dpy,
-            self.aux.vis.depth(),
-            frame,
-            self.aux.root,
-            tag.tiling_size.x,
-            tag.tiling_size.y,
-            tag.tiling_size.width,
-            tag.tiling_size.height,
-            0,
-            WindowClass::INPUT_OUTPUT,
-            self.aux.vis.visualid(),
-            &aux,
-        )?;
-        reparent_window(&self.aux.dpy, win, frame, 0, 0)?;
         change_window_attributes(
             &self.aux.dpy,
             win,
-            &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+            &ChangeWindowAttributesAux::new().event_mask(
+                EventMask::ENTER_WINDOW
+                    | EventMask::FOCUS_CHANGE
+                    | EventMask::SUBSTRUCTURE_NOTIFY
+                    | EventMask::PROPERTY_CHANGE
+            ),
         )?;
 
         tag.set_layer(&self.aux, client, focus)?;
@@ -637,7 +609,7 @@ impl WindowManager {
         } else {
             change_window_attributes(
                 &self.aux.dpy,
-                frame,
+                win,
                 &ChangeWindowAttributesAux::new()
                     .border_pixel(self.aux.theme.border_color_unfocused),
             )?;
@@ -646,8 +618,6 @@ impl WindowManager {
         self.ewmh_set_client_tag(client, tag)?;
 
         self.aux.dpy.flush()?;
-        self.windows
-            .insert(frame, WindowLocation::Client(tag, client));
         self.windows
             .insert(win, WindowLocation::Client(tag, client));
         self.aux
@@ -695,7 +665,6 @@ impl WindowManager {
         };
         self.remove_client(tag, client)?;
         let hidden = client_.flags.hidden;
-        let frame = client_.frame;
         let win = client_.win;
         let tag = self.tags.get_mut(&dest).unwrap();
         if let NodeContents::Leaf(leaf) = &mut info {
@@ -718,7 +687,7 @@ impl WindowManager {
             } else {
                 change_window_attributes(
                     &self.aux.dpy,
-                    frame,
+                    win,
                     &ChangeWindowAttributesAux::new()
                         .border_pixel(self.aux.theme.border_color_unfocused),
                 )?;
@@ -727,8 +696,6 @@ impl WindowManager {
         let tag = tag.id;
         self.ewmh_set_client_tag(client, tag)?;
         self.aux.dpy.flush()?;
-        self.windows
-            .insert(frame, WindowLocation::Client(tag, client));
         self.windows
             .insert(win, WindowLocation::Client(tag, client));
         self.aux

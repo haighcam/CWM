@@ -103,17 +103,7 @@ impl Tag {
         {
             conf_aux = conf_aux.sibling(sibling).stack_mode(StackMode::ABOVE);
         }
-        configure_window(&aux.dpy, client.frame, &conf_aux)?;
-        configure_window(
-            &aux.dpy,
-            client.win,
-            &conf_aux
-                .x(0)
-                .y(0)
-                .border_width(0)
-                .stack_mode(None)
-                .sibling(None),
-        )?;
+        configure_window(&aux.dpy, client.win, &conf_aux)?;
         let client = &mut self.clients[idx];
         let (layer_pos, old) = if focus {
             self.layers[layer].push_front(idx)
@@ -138,7 +128,7 @@ impl Tag {
             self.layers[layer..]
                 .iter()
                 .filter_map(|x| x.back())
-                .map(|x| self.clients[x].frame)
+                .map(|x| self.clients[x].win)
                 .next()
         }
     }
@@ -151,7 +141,7 @@ impl Tag {
                 .iter()
                 .rev()
                 .filter_map(|x| x.front())
-                .map(|x| self.clients[x].frame)
+                .map(|x| self.clients[x].win)
                 .next()
         }
     }
