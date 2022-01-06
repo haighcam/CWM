@@ -285,7 +285,7 @@ impl WindowManager {
         self.tags
             .get_mut(&mon.focused_tag)
             .unwrap()
-            .set_tiling_size(&self.aux, mon.free_rect())
+            .resize_all(&self.aux, &mon.free_rect(), &mon.size)
     }
 
     pub fn update_monitors(&mut self) -> Result<()> {
