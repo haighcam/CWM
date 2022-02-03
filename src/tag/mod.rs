@@ -42,6 +42,9 @@ pub struct Tag {
 }
 
 impl Tag {
+    pub fn get_layers(&self) -> Vec<Vec<usize>> {
+        self.layers.iter().map(|layer| layer.vec()).collect()
+    }
     pub fn empty(&self) -> bool {
         self.clients.len() == self.free_clients.len()
     }
@@ -96,7 +99,6 @@ impl Tag {
         info!("done showing windows");
         self.monitor.replace(monitor.id);
         self.bg.replace(monitor.bg);
-        self.size.copy(&monitor.size);
         monitor.prev_tag = monitor.focused_tag;
         monitor.focused_tag = self.id;
         self.set_active_window(

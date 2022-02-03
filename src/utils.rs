@@ -118,6 +118,21 @@ impl Rect {
             && point.1 < self.y + self.height as i16
     }
 
+    pub fn clamp(&self, other: &mut Rect) {
+        if other.x + other.width as i16 > self.x + self.width as i16 {
+            other.x = self.x + (self.width as i16 - other.width as i16)
+        }
+        if other.y + other.height as i16 > self.y + self.height as i16 {
+            other.y = self.y + (self.height as i16 - other.height as i16)
+        }
+        if other.x < self.x {
+            other.x = self.x
+        }
+        if other.y < self.y {
+            other.y = self.y
+        }
+    }
+
     pub fn contains_rect(&self, other: &Rect) -> bool {
         other.x >= self.x
             && other.y >= self.y

@@ -1,7 +1,7 @@
 use anyhow::{bail, Error, Result};
 use cwm::connections::{
     ClientRequest, CwmResponse, HiddenSelection, Rule as Rule_, SetArg, Side as Side_, StackLayer,
-    Stream, TagSelection, SOCKET,
+    Stream, TagSelection,
 };
 use nix::poll::{poll, PollFd, PollFlags};
 use simplelog::*;
@@ -378,6 +378,7 @@ mod query {
         #[struct_args_match("-f")]
         Focused(FocusedArgs),
         Name(NameArgs),
+        Stack(Tag),
     }
 
     #[derive(Arg)]
@@ -395,11 +396,23 @@ mod query {
         Tag(Tag),
     }
 
+    fn stack(mut stream: ClientStream, Tag(tag, _): Tag) -> Result<()> {
+        stream.send_value(&ClientRequest::ViewStack(tag))?;
+        let (_, response) = stream.get_value()?;
+        if let CwmResponse::ViewStack(stack) = response {
+            println!("{:?}", stack);
+        } else {
+            bail!("invalid response from server")
+        }
+        Ok(())
+    }
+
     impl Args {
         pub(super) fn process(self, stream: ClientStream) -> Result<()> {
             match self {
                 Self::Focused(args) => args.process(stream),
                 Self::Name(args) => args.process(stream),
+                Self::Stack(tag) => stack(stream, tag),
             }
         }
     }
@@ -628,7 +641,8 @@ struct ClientStream {
 
 impl ClientStream {
     fn new() -> Result<Self> {
-        let stream = Stream::new(UnixStream::connect(SOCKET)?);
+        let socket = format!("/tmp/cwm-{}.sock", whoami::username());
+        let stream = Stream::new(UnixStream::connect(socket)?);
         let fd = [PollFd::new(stream.as_raw_fd(), PollFlags::POLLIN)];
         Ok(Self { stream, fd })
     }

@@ -25,8 +25,6 @@ pub use crate::config::Theme;
 pub use crate::rules::Rule;
 pub use crate::tag::{Side, StackLayer};
 
-pub const SOCKET: &str = "/tmp/cwm.sock";
-
 pub enum SelectionContent {
     Presel(Atom, usize, Presel),
     Node(Atom, usize),
@@ -184,6 +182,7 @@ pub struct Aux {
     listener: UnixListener,
     streams: Vec<Stream>,
     poll_fds: Vec<PollFd>,
+    socket: String,
     pub root: u32,
     pub theme: Theme,
     pub hooks: Hooks,
@@ -257,6 +256,7 @@ pub enum ClientRequest {
     PreselAmt(f32),
     SelectionCancel,
     Rotate(bool),
+    ViewStack(TagSelection),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -275,11 +275,12 @@ pub enum CwmResponse {
     FocusedTag(u32),
     FocusedWindow(Option<u32>),
     Name(String),
+    ViewStack(Vec<Vec<usize>>),
 }
 
 impl Drop for Aux {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(SOCKET);
+        let _ = std::fs::remove_file(&self.socket);
     }
 }
 
@@ -297,8 +298,9 @@ impl AsRawFd for Stream {
 
 impl Aux {
     pub(crate) fn new(dpy: RustConnection, root: u32, screen: usize) -> Result<Self> {
-        let _ = std::fs::remove_file(SOCKET); // possibly use this to check if it is already running.
-        let listener = UnixListener::bind(SOCKET).unwrap();
+        let socket = format!("/tmp/cwm-{}.sock", whoami::username());
+        let _ = std::fs::remove_file(&socket); // possibly use this to check if it is already running.
+        let listener = UnixListener::bind(&socket).unwrap();
         listener
             .set_nonblocking(true)
             .expect("Couldn't set non blocking");
@@ -330,6 +332,7 @@ impl Aux {
             listener,
             streams: Vec::new(),
             poll_fds,
+            socket,
             root,
             theme: Theme::default(),
             hooks: Hooks::new(),
@@ -934,6 +937,15 @@ impl WindowManager {
                 } else if let Some(tag) = self.get_tag(TagSelection::Focused(None))? {
                     self.tags.get_mut(&tag).unwrap().rotate(&self.aux, 0, rev)?;
                 }
+            }
+            ClientRequest::ViewStack(tag) => {
+                if let Some(tag) = self.get_tag(tag)? {
+                    stream.send(&CwmResponse::ViewStack(
+                        self.tags.get_mut(&tag).unwrap().get_layers(),
+                    ));
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
             }
         }
         Ok(())

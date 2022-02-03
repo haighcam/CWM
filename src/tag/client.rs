@@ -547,7 +547,7 @@ impl WindowManager {
         };
         size.0 += border_width * 2;
         size.1 += border_width * 2;
-        let floating_rect = if centered || pos.is_none() {
+        let mut floating_rect = if centered || pos.is_none() {
             Rect::new(
                 tag.tiling_size.x + (tag.tiling_size.width as i16 - size.0 as i16) / 2,
                 tag.tiling_size.y + (tag.tiling_size.height as i16 - size.1 as i16) / 2,
@@ -560,6 +560,7 @@ impl WindowManager {
             pos.1 -= border_width as i16;
             Rect::new(pos.0, pos.1, size.0, size.1)
         };
+        tag.tiling_size.clamp(&mut floating_rect);
 
         let hidden = flags.hidden;
         let client = Client {
@@ -592,7 +593,7 @@ impl WindowManager {
                 EventMask::ENTER_WINDOW
                     | EventMask::FOCUS_CHANGE
                     | EventMask::SUBSTRUCTURE_NOTIFY
-                    | EventMask::PROPERTY_CHANGE
+                    | EventMask::PROPERTY_CHANGE,
             ),
         )?;
 

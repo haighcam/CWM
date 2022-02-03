@@ -59,6 +59,19 @@ impl Layer {
             Layer::Multi(layer) => layer.remove_node(layer_pos),
         }
     }
+
+    pub fn vec(&self) -> Vec<usize> {
+        match self {
+            Layer::Single(layer) => {
+                if let Some(item) = layer {
+                    vec![*item]
+                } else {
+                    vec![]
+                }
+            }
+            Layer::Multi(layer) => layer.iter().cloned().collect(),
+        }
+    }
 }
 
 impl StackLayer {
@@ -102,6 +115,8 @@ impl Tag {
         } else if let Some(sibling) = self.get_layer_bound_above(layer + if focus { 1 } else { 0 })
         {
             conf_aux = conf_aux.sibling(sibling).stack_mode(StackMode::ABOVE);
+        } else {
+            conf_aux = conf_aux.stack_mode(StackMode::ABOVE);
         }
         configure_window(&aux.dpy, client.win, &conf_aux)?;
         let client = &mut self.clients[idx];

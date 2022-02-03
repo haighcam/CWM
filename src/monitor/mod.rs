@@ -282,10 +282,11 @@ impl WindowManager {
         let mon = self.monitors.get_mut(&info.name).unwrap();
         mon.size = Rect::new(info.x, info.y, info.width, info.height);
         configure_window(&self.aux.dpy, mon.bg, &mon.size.aux(0))?;
-        self.tags
-            .get_mut(&mon.focused_tag)
-            .unwrap()
-            .resize_all(&self.aux, &mon.free_rect(), &mon.size)
+        self.tags.get_mut(&mon.focused_tag).unwrap().resize_all(
+            &self.aux,
+            &mon.free_rect(),
+            &mon.size,
+        )
     }
 
     pub fn update_monitors(&mut self) -> Result<()> {
