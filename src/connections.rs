@@ -256,6 +256,7 @@ pub enum ClientRequest {
     PreselAmt(f32),
     SelectionCancel,
     Rotate(bool),
+    ViewLayers(TagSelection),
     ViewStack(TagSelection),
 }
 
@@ -275,7 +276,8 @@ pub enum CwmResponse {
     FocusedTag(u32),
     FocusedWindow(Option<u32>),
     Name(String),
-    ViewStack(Vec<Vec<usize>>),
+    ViewLayers(Vec<Vec<usize>>),
+    ViewStack(Vec<usize>),
 }
 
 impl Drop for Aux {
@@ -938,10 +940,19 @@ impl WindowManager {
                     self.tags.get_mut(&tag).unwrap().rotate(&self.aux, 0, rev)?;
                 }
             }
+            ClientRequest::ViewLayers(tag) => {
+                if let Some(tag) = self.get_tag(tag)? {
+                    stream.send(&CwmResponse::ViewLayers(
+                        self.tags.get_mut(&tag).unwrap().get_layers(),
+                    ));
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
             ClientRequest::ViewStack(tag) => {
                 if let Some(tag) = self.get_tag(tag)? {
                     stream.send(&CwmResponse::ViewStack(
-                        self.tags.get_mut(&tag).unwrap().get_layers(),
+                        self.tags.get_mut(&tag).unwrap().get_stack(),
                     ));
                 }
                 self.aux.streams.push(stream);

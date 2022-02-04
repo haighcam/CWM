@@ -378,6 +378,7 @@ mod query {
         #[struct_args_match("-f")]
         Focused(FocusedArgs),
         Name(NameArgs),
+        Layers(Tag),
         Stack(Tag),
     }
 
@@ -396,6 +397,17 @@ mod query {
         Tag(Tag),
     }
 
+    fn layers(mut stream: ClientStream, Tag(tag, _): Tag) -> Result<()> {
+        stream.send_value(&ClientRequest::ViewLayers(tag))?;
+        let (_, response) = stream.get_value()?;
+        if let CwmResponse::ViewLayers(stack) = response {
+            println!("{:?}", stack);
+        } else {
+            bail!("invalid response from server")
+        }
+        Ok(())
+    }
+
     fn stack(mut stream: ClientStream, Tag(tag, _): Tag) -> Result<()> {
         stream.send_value(&ClientRequest::ViewStack(tag))?;
         let (_, response) = stream.get_value()?;
@@ -412,6 +424,7 @@ mod query {
             match self {
                 Self::Focused(args) => args.process(stream),
                 Self::Name(args) => args.process(stream),
+                Self::Layers(tag) => layers(stream, tag),
                 Self::Stack(tag) => stack(stream, tag),
             }
         }

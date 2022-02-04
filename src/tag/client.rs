@@ -374,7 +374,7 @@ impl Tag {
             } else {
                 self.focus_stack.push_back(client_)
             };
-            self.set_layer(aux, *self.focus_stack.front().unwrap(), true)?;
+            self.switch_layer(aux, *self.focus_stack.front().unwrap())?;
             self.set_focus(aux)?;
         }
         Ok(())

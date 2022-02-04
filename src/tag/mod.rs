@@ -45,6 +45,9 @@ impl Tag {
     pub fn get_layers(&self) -> Vec<Vec<usize>> {
         self.layers.iter().map(|layer| layer.vec()).collect()
     }
+    pub fn get_stack(&self) -> Vec<usize> {
+        self.focus_stack.iter().cloned().collect()
+    }
     pub fn empty(&self) -> bool {
         self.clients.len() == self.free_clients.len()
     }
