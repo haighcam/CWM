@@ -10,7 +10,7 @@ use x11rb::{
 
 use log::info;
 mod config;
-mod utils;
+pub mod utils;
 use config::IGNORED_MODS;
 mod monitor;
 use monitor::Monitor;

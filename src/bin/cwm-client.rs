@@ -380,6 +380,7 @@ mod query {
         Name(NameArgs),
         Layers(Tag),
         Stack(Tag),
+        Clients(Tag),
     }
 
     #[derive(Arg)]
@@ -419,6 +420,17 @@ mod query {
         Ok(())
     }
 
+    fn clients(mut stream: ClientStream, Tag(tag, _): Tag) -> Result<()> {
+        stream.send_value(&ClientRequest::ViewClients(tag))?;
+        let (_, response) = stream.get_value()?;
+        if let CwmResponse::ViewClients(stack) = response {
+            println!("{:?}", stack);
+        } else {
+            bail!("invalid response from server")
+        }
+        Ok(())
+    }
+
     impl Args {
         pub(super) fn process(self, stream: ClientStream) -> Result<()> {
             match self {
@@ -426,6 +438,7 @@ mod query {
                 Self::Name(args) => args.process(stream),
                 Self::Layers(tag) => layers(stream, tag),
                 Self::Stack(tag) => stack(stream, tag),
+                Self::Clients(tag) => clients(stream, tag),
             }
         }
     }

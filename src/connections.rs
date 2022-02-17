@@ -258,6 +258,7 @@ pub enum ClientRequest {
     Rotate(bool),
     ViewLayers(TagSelection),
     ViewStack(TagSelection),
+    ViewClients(TagSelection),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -278,6 +279,7 @@ pub enum CwmResponse {
     Name(String),
     ViewLayers(Vec<Vec<usize>>),
     ViewStack(Vec<usize>),
+    ViewClients(Vec<(usize, u32, Option<String>)>),
 }
 
 impl Drop for Aux {
@@ -953,6 +955,15 @@ impl WindowManager {
                 if let Some(tag) = self.get_tag(tag)? {
                     stream.send(&CwmResponse::ViewStack(
                         self.tags.get_mut(&tag).unwrap().get_stack(),
+                    ));
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            ClientRequest::ViewClients(tag) => {
+                if let Some(tag) = self.get_tag(tag)? {
+                    stream.send(&CwmResponse::ViewClients(
+                        self.tags.get_mut(&tag).unwrap().get_clients(),
                     ));
                 }
                 self.aux.streams.push(stream);

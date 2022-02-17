@@ -48,6 +48,9 @@ impl Tag {
     pub fn get_stack(&self) -> Vec<usize> {
         self.focus_stack.iter().cloned().collect()
     }
+    pub fn get_clients(&self) -> Vec<(usize, u32, Option<String>)> {
+        self.clients.iter().enumerate().map(|(i, x)| (i, x.win, x.name.clone())).collect()
+    }
     pub fn empty(&self) -> bool {
         self.clients.len() == self.free_clients.len()
     }

@@ -691,6 +691,9 @@ impl Tag {
         } {
             self.propagate_absent(aux, parent)?;
         }
+        if !absent {
+            self.resize_tiled(aux, self.clients[client].node, None)?;
+        }
         Ok(())
     }
 

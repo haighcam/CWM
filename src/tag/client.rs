@@ -382,17 +382,19 @@ impl Tag {
 }
 
 impl WindowManager {
-    pub fn remove_client(&mut self, tag: Atom, client: usize) -> Result<Window> {
+    pub fn remove_client(&mut self, tag: Atom, client_: usize) -> Result<Window> {
         let tag = self.tags.get_mut(&tag).unwrap();
-        tag.urgent.remove(&client);
-        tag.psuedo_urgent.remove(&client);
-        tag.free_clients.insert(client);
+        tag.urgent.remove(&client_);
+        tag.psuedo_urgent.remove(&client_);
+        tag.free_clients.insert(client_);
         let (win, node) = {
-            let client = &mut tag.clients[client];
+            let client = &mut tag.clients[client_];
             let (layer, layer_pos) = client.layer_pos;
             tag.layers[layer].remove(layer_pos);
             if !client.flags.hidden {
                 tag.focus_stack.remove_node(client.stack_pos);
+            } else {
+                tag.hidden.retain(|x| *x != client_);
             }
             client.flags.hidden = true;
             (client.win, client.node)
@@ -420,7 +422,7 @@ impl WindowManager {
 
     pub fn unmanage_client(&mut self, tag: Atom, client: usize) -> Result<()> {
         let win = self.remove_client(tag, client)?;
-        info!("Unmanaging and removing client {}", win);
+        info!("Unmanaging and removing client {}, {}", win, client);
         delete_property(&self.aux.dpy, win, self.aux.atoms.WM_STATE)?;
         delete_property(&self.aux.dpy, win, self.aux.atoms._NET_WM_STATE)?;
         self.aux

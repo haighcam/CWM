@@ -180,6 +180,7 @@ impl From<GetGeometryReply> for Rect {
 }
 
 pub mod stack {
+    #[derive(Debug)]
     pub struct StackElem<T> {
         item: T,
         next: Option<usize>,
@@ -196,7 +197,7 @@ pub mod stack {
         }
     }
 
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     pub struct Stack<T> {
         items: Vec<StackElem<T>>,
         free: Vec<usize>,
@@ -226,6 +227,7 @@ pub mod stack {
                 self.items.len() - 1
             };
             self.items[idx].next = self.head;
+            self.items[idx].prev = None;
 
             match self.head {
                 None => self.tail = Some(idx),
@@ -245,6 +247,7 @@ pub mod stack {
                 self.items.len() - 1
             };
             self.items[idx].prev = self.tail;
+            self.items[idx].next = None;
 
             match self.tail {
                 None => self.head = Some(idx),
@@ -264,6 +267,7 @@ pub mod stack {
                 Some(next_idx) => self.items[next_idx].prev = self.items[idx].prev,
                 None => self.tail = self.items[idx].prev,
             }
+            self.free.push(idx);
         }
 
         pub fn iter(&self) -> StackIter<'_, T> {
