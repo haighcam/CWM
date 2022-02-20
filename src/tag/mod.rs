@@ -95,6 +95,7 @@ impl Tag {
         let available = monitor.free_rect();
         info!("resizing, {:?}, {:?}", self.size, monitor.size);
         self.resize_all(aux, &available, &monitor.size)?;
+        self.size.copy(&monitor.size);
         info!("showing windows");
         for client in self.clients.iter() {
             if !client.flags.hidden {

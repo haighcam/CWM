@@ -743,9 +743,6 @@ impl Tag {
         if *tiling_size != self.tiling_size {
             self.tiling_size.copy(tiling_size)
         }
-        if *new_size != self.size {
-            self.size.copy(new_size)
-        }
         let mut q = vec![0];
         while !q.is_empty() {
             let node_ = q.pop().unwrap();
