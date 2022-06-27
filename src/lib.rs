@@ -167,22 +167,38 @@ impl WindowManager {
 
 pub fn run_wm() {
     info!("CWM Starting");
-    let mut wm = WindowManager::new().unwrap();
+    let mut wm = match WindowManager::new() {
+        Ok(wm) => wm,
+        Err(e) => {
+            info!("Error: {:?}", e);
+            return
+        }
+    };
     let mut event_handler = EventHandler::new();
     wm.aux.hooks.config();
-    wm.update_monitors().unwrap();
+    if let Err(e) = wm.update_monitors() {
+        info!("Error: {:?}", e);
+        return
+    }
 
     while wm.running {
         wm.aux.wait_for_updates();
-        while let Some(event) = wm.aux.dpy.poll_for_event().unwrap_or_else(|_| {
+        while let Some(event) = wm.aux.dpy.poll_for_event().unwrap_or_else(|e| {
             wm.running = false;
+            info!("Error: {:?}", e);
             None
         }) {
             let _ = event_handler.handle_event(&mut wm, event);
         }
 
-        wm.handle_connections().unwrap();
-        wm.aux.dpy.flush().unwrap();
+        if let Err(e) = wm.handle_connections() {
+            info!("Error: {:?}", e);
+            return
+        }
+        if let Err(e) = wm.aux.dpy.flush() {
+            info!("Error: {:?}", e);
+            return
+        }
     }
     info!("CWM Stopping");
 }

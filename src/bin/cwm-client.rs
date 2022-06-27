@@ -114,6 +114,7 @@ mod node {
         Select(Node, Side),
         Move(Node, Side, u16),
         Resize(Node, Side, i16),
+        IgnoreSizeHints(Node),
     }
 
     impl Args {
@@ -156,6 +157,9 @@ mod node {
                 }
                 Self::Resize(Node(node), Side(side), amt) => {
                     stream.send_value(&ClientRequest::ResizeWindow(node, side, amt))
+                }
+                Self::IgnoreSizeHints(Node(node)) => {
+                    stream.send_value(&ClientRequest::IgnoreSizeHints(node))
                 }
             }
         }

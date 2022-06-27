@@ -67,8 +67,8 @@ impl NodeInfo {
 #[derive(Clone, Debug)]
 pub struct LeafInfo {
     pub floating: Rect,
-    min_size: (u16, u16),
-    max_size: (u16, u16),
+    pub min_size: (u16, u16),
+    pub max_size: (u16, u16),
     client: usize,
 }
 

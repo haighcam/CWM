@@ -259,6 +259,7 @@ pub enum ClientRequest {
     ViewLayers(TagSelection),
     ViewStack(TagSelection),
     ViewClients(TagSelection),
+    IgnoreSizeHints(Option<u32>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -724,6 +725,19 @@ impl WindowManager {
                         side == Side::Left,
                         side == Side::Top,
                     )?;
+                }
+                self.aux.streams.push(stream);
+                self.aux.poll_fds.push(poll_fd);
+            }
+            ClientRequest::IgnoreSizeHints(client) => {
+                if let Some((tag, client)) = self.get_client(client) {
+                    let mut tag = self.tags.get_mut(&tag).unwrap();
+                    let client = tag.client(client);
+                    let node = tag.node_mut(client.node);
+                    if let NodeContents::Leaf(leaf) = &mut node.info {
+                        leaf.min_size = (self.aux.theme.window_min_width, self.aux.theme.window_min_height);
+                        leaf.max_size = (std::u16::MAX, std::u16::MAX);
+                    }
                 }
                 self.aux.streams.push(stream);
                 self.aux.poll_fds.push(poll_fd);

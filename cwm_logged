@@ -1,0 +1,3 @@
+#!/bin/bash
+
+cwm > /tmp/curr_cwm_log.txt 2>&1
